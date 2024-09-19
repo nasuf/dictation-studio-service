@@ -50,8 +50,8 @@ def download_transcript(video_id):
         transcript_text = formatter.format_transcript(transcript.fetch())
 
         # Remove timecodes and speaker names
-        transcript_text = re.sub(r'\[\d+:\d+:\d+\]', '', transcript_text)
-        transcript_text = re.sub(r'<\w+>', '', transcript_text)
+        # transcript_text = re.sub(r'\[\d+:\d+:\d+\]', '', transcript_text)
+        # transcript_text = re.sub(r'<\w+>', '', transcript_text)
         return transcript_text
     except Exception as e:
         print(f"Error downloading transcript: {e}")

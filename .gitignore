@@ -1,0 +1,53 @@
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependency Directories
+node_modules/
+vendor/
+
+# Build Outputs
+dist/
+build/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment Variables
+.env
+.env.local
+
+# Compiled Files
+*.class
+*.pyc
+*.pyo
+
+# Package Files
+*.jar
+*.war
+*.ear
+*.zip
+
+# Temporary Files
+*.tmp
+*.bak
+*.swp
+
+# Database Files
+*.sqlite
+
+# Coverage Reports
+coverage/
+
+# Miscellaneous
+.cache/
+.pytest_cache/
+__pycache__/
