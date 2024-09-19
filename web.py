@@ -1,9 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields
+from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
 import re
 
 app = Flask(__name__)
+CORS(app)  # 添加这行来启用 CORS
+
 api = Api(app, version='1.0', title='YouTube Transcript Downloader API',
           description='API for downloading YouTube video transcripts')
 
