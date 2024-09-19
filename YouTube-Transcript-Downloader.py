@@ -3,6 +3,7 @@ from youtube_transcript_api.formatters import TextFormatter
 import requests
 import re
 import os
+import json
 
 def get_video_id(youtube_url):
     """
@@ -36,23 +37,29 @@ def get_video_title(video_id):
 
 def download_transcript(video_id):
     """
-    Download the transcript and return as a string.
+    Download the transcript and return as a JSON string.
     Args:
         video_id (str): The YouTube video ID.
     Returns:
-        str: The transcript text or an empty string if an error occurs.
+        str: JSON string containing transcript data or an empty string if an error occurs.
     """
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         transcript = transcript_list.find_generated_transcript(['en'])
 
-        formatter = TextFormatter()
-        transcript_text = formatter.format_transcript(transcript.fetch())
+        transcript_data = transcript.fetch()
+        
+        # Format transcript data as a list of dictionaries
+        formatted_transcript = []
+        for entry in transcript_data:
+            formatted_entry = {
+                "start": round(entry['start'], 2),
+                "end": round(entry['start'] + entry['duration'], 2),
+                "transcript": entry['text']
+            }
+            formatted_transcript.append(formatted_entry)
 
-        # Remove timecodes and speaker names
-        # transcript_text = re.sub(r'\[\d+:\d+:\d+\]', '', transcript_text)
-        # transcript_text = re.sub(r'<\w+>', '', transcript_text)
-        return transcript_text
+        return json.dumps(formatted_transcript, indent=2)
     except Exception as e:
         print(f"Error downloading transcript: {e}")
         return ""
@@ -62,14 +69,14 @@ def main():
     video_id = get_video_id(youtube_url)
 
     if video_id:
-        transcript_text = download_transcript(video_id)
-        if transcript_text:
+        transcript_json = download_transcript(video_id)
+        if transcript_json:
             video_title = get_video_title(video_id)
-            file_name = f"{video_id}_{video_title}.txt"
+            file_name = f"{video_id}_{video_title}.json"
             file_name = re.sub(r'[\\/*?:"<>|]', '', file_name)  # Remove invalid characters
 
             with open(file_name, 'w', encoding='utf-8') as file:
-                file.write(transcript_text)
+                file.write(transcript_json)
 
             print(f"Transcript saved to {file_name}")
         else:
