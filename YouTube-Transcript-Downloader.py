@@ -45,8 +45,23 @@ def download_transcript(video_id):
     """
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = transcript_list.find_generated_transcript(['en'])
+        
+        # Get all available languages
+        available_languages = [t.language_code for t in transcript_list]
+        print(f"Available languages: {', '.join(available_languages)}")
 
+        # Prioritize English languages
+        english_languages = [lang for lang in available_languages if lang.startswith('en')]
+
+        if english_languages:
+            selected_language = english_languages[0]
+        elif available_languages:
+            selected_language = available_languages[0]
+        else:
+            raise Exception("No transcripts available")
+
+        transcript = transcript_list.find_transcript([selected_language])
+        
         transcript_data = transcript.fetch()
         
         # Format transcript data as a list of dictionaries
