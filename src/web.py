@@ -10,6 +10,8 @@ import redis
 import re
 from config import REDIS_HOST, REDIS_PORT, REDIS_DB  # Changed from relative to absolute import
 import json
+import requests
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 CORS(app)
@@ -74,6 +76,18 @@ def download_transcript(video_id):
         return formatted_transcript
     except Exception as e:
         print(f"Error downloading transcript: {e}")
+        return None
+
+def get_video_title(video_id):
+    """Get the title of a YouTube video."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        title = soup.find('meta', property='og:title')['content']
+        return title
+    except Exception as e:
+        print(f"Error getting video title: {e}")
         return None
 
 # Update the channel_info_model
@@ -179,9 +193,12 @@ class YouTubeVideoList(Resource):
                 if transcript is None:
                     return {"error": f"Unable to download transcript for video: {link}"}, 500
                 
+                title = get_video_title(video_id)
+                
                 videos.append({
                     "link": link,
                     "video_id": video_id,
+                    "title": title,
                     "transcript": transcript
                 })
             
@@ -191,7 +208,7 @@ class YouTubeVideoList(Resource):
             }
             redis_client.hset('video_list', channel_id, json.dumps(video_info))
             
-            return {"message": f"Video list with transcripts for channel {channel_id} saved successfully"}, 200
+            return {"message": f"Video list with transcripts and titles for channel {channel_id} saved successfully"}, 200
         except Exception as e:
             return {"error": f"Error saving video list with transcripts and titles: {str(e)}"}, 500
 
