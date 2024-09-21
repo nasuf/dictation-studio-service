@@ -11,11 +11,12 @@ import redis
 import requests
 from bs4 import BeautifulSoup
 import tempfile
-from config import REDIS_HOST, REDIS_PORT, REDIS_DB, GOOGLE_CLIENT_ID
-from google.oauth2 import id_token
+from config import REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB
 from google.auth.transport import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,7 +33,8 @@ api = Api(app, version='1.0', title='Daily Dictation Service API',
 ns = api.namespace('api', description='Daily Dictation Service Operations')
 
 # Redis connection
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB)
+redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB)
 
 # Input models for Swagger
 youtube_url_model = api.model('YouTubeURL', {
@@ -115,6 +117,7 @@ def get_video_title(video_id):
 
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
+    @jwt_required()
     @ns.expect(youtube_url_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid URL', 500: 'Server Error'})
     def post(self):
@@ -137,6 +140,7 @@ class YouTubeTranscript(Resource):
 
 @ns.route('/channel')
 class YouTubeChannel(Resource):
+    @jwt_required()
     @ns.expect(channel_info_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def post(self):
@@ -199,6 +203,7 @@ class YouTubeChannel(Resource):
 
 @ns.route('/video-list')
 class YouTubeVideoList(Resource):
+    @jwt_required()
     @ns.expect(video_list_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def post(self):
@@ -216,7 +221,7 @@ class YouTubeVideoList(Resource):
                 logger.warning(f"Channel with id {channel_id} does not exist")
                 return {"error": f"Channel with id {channel_id} does not exist."}, 400
 
-            existing_video_info = redis_client.hget('video_list', channel_id)
+            existing_video_info = redis_client.hget('video', channel_id)
             if existing_video_info:
                 existing_video_info = json.loads(existing_video_info.decode())
                 existing_videos = {video['video_id']: video for video in existing_video_info.get('videos', [])}
@@ -280,6 +285,7 @@ class YouTubeVideoList(Resource):
 
 @ns.route('/video-list/<string:channel_id>')
 class YouTubeVideoListByChannel(Resource):
+    @jwt_required()
     @ns.doc(responses={200: 'Success', 404: 'Channel not found', 500: 'Server Error'})
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
@@ -305,6 +311,7 @@ class YouTubeVideoListByChannel(Resource):
 
 @ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
 class VideoTranscript(Resource):
+    @jwt_required()
     @ns.doc(responses={200: 'Success', 404: 'Not Found', 500: 'Server Error'})
     def get(self, channel_id, video_id):
         """Get transcript for a specific video in a channel"""
@@ -330,6 +337,7 @@ class VideoTranscript(Resource):
 
 @ns.route('/export-data')
 class ExportData(Resource):
+    @jwt_required()
     @ns.doc(responses={200: 'Success', 500: 'Server Error'})
     def get(self):
         """Export all data from Redis to a JSON file"""
@@ -363,6 +371,7 @@ class ExportData(Resource):
 
 @ns.route('/import-data')
 class ImportData(Resource):
+    @jwt_required()
     @ns.expect(api.parser().add_argument('file', location='files', type='file', required=True))
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def post(self):
@@ -420,18 +429,43 @@ class GoogleTokenVerification(Resource):
             name = user_info.get('name')
             picture = user_info.get('picture')
 
-            logger.info(f"Successfully verified Google token for user: {email}")
+            # Create a JWT token
+            jwt_token = create_access_token(identity=email)
+
+            # Store user information in Redis
+            user_data = {
+                "user_id": userid,
+                "email": email,
+                "name": name,
+                "picture": picture
+            }
+            redis_user_client.hset(f"user:{email}", mapping=user_data)
+
+            logger.info(f"Successfully verified Google token and stored user info for: {email}")
             return {
                 "message": "Token verified successfully",
                 "user_id": userid,
                 "email": email,
                 "name": name,
-                "picture": picture
+                "picture": picture,
+                "jwt_token": jwt_token
             }, 200
 
         except Exception as e:
             logger.warning(f"Invalid Google token: {str(e)}")
             return {"error": "Invalid token"}, 400
 
+@ns.route('/check-login')
+class CheckLogin(Resource):
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 401: 'Unauthorized'})
+    def get(self):
+        """Check if the user is logged in and the session is valid"""
+        current_user = get_jwt_identity()
+        return {"message": "User is logged in", "user": current_user}, 200
+
 if __name__ == '__main__':
+    app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
+    jwt = JWTManager(app)
     app.run(debug=True, host='0.0.0.0', port=4001)
