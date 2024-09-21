@@ -165,7 +165,7 @@ class YouTubeChannel(Resource):
             for _, value in all_channels.items():
                 channel_info = json.loads(value.decode())
                 channels.append(channel_info)
-            return channels, 200  # Return the list directly, don't use jsonify
+            return channels, 200
         except Exception as e:
             return {"error": f"Error retrieving channel information: {str(e)}"}, 500
 
@@ -216,7 +216,7 @@ class YouTubeVideoList(Resource):
     def get(self):
         """Get all YouTube video lists with transcripts from Redis"""
         try:
-            all_video_lists = redis_client.hgetall('video')
+            all_video_lists = redis_client.hgetall('video_list')
             video_lists = []
             for _, value in all_video_lists.items():
                 video_list_info = json.loads(value.decode())
@@ -233,7 +233,7 @@ class YouTubeVideoList(Resource):
         try:
             video_info = redis_client.hget('video_list', channel_id)
             if video_info is None:
-                return {"error": "Channel not found"}, 404
+                return {"channel_id": channel_id, "videos": []}, 200
             
             video_info = json.loads(video_info.decode())
             videos = video_info.get('videos', [])
