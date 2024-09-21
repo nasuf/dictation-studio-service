@@ -145,14 +145,26 @@ class YouTubeChannel(Resource):
                 if not channel_name or not channel_image_url or not channel_id:
                     return {"error": f"Invalid input for channel {channel_id}. Name, id, and image_url are required."}, 400
 
-                channel_info = {
-                    'id': channel_id,
-                    'name': channel_name,
-                    'image_url': channel_image_url
-                }
-                redis_client.hset('video_channel', channel_id, json.dumps(channel_info))
+                # 检查频道是否已存在
+                existing_channel = redis_client.hget('video_channel', channel_id)
+                if existing_channel:
+                    existing_channel = json.loads(existing_channel.decode())
+                    # 更新现有频道信息
+                    existing_channel.update({
+                        'name': channel_name,
+                        'image_url': channel_image_url
+                    })
+                    redis_client.hset('video_channel', channel_id, json.dumps(existing_channel))
+                else:
+                    # 添加新频道
+                    channel_info = {
+                        'id': channel_id,
+                        'name': channel_name,
+                        'image_url': channel_image_url
+                    }
+                    redis_client.hset('video_channel', channel_id, json.dumps(channel_info))
             
-            return {"message": f"{len(channels)} channel(s) information saved successfully"}, 200
+            return {"message": f"{len(channels)} channel(s) information saved or updated successfully"}, 200
         except Exception as e:
             return {"error": f"Error saving channel information: {str(e)}"}, 500
 
@@ -183,28 +195,48 @@ class YouTubeVideoList(Resource):
             return {"error": "Invalid input. 'channel_id' and 'video_links' are required."}, 400
 
         try:
-            videos = []
+            # 检查频道是否存在
+            if not redis_client.hexists('video_channel', channel_id):
+                return {"error": f"Channel with id {channel_id} does not exist."}, 400
+
+            # 获取现有的视频列表
+            existing_video_info = redis_client.hget('video_list', channel_id)
+            if existing_video_info:
+                existing_video_info = json.loads(existing_video_info.decode())
+                existing_videos = {video['video_id']: video for video in existing_video_info.get('videos', [])}
+            else:
+                existing_videos = {}
+
+            new_videos = []
             for link in video_links:
                 video_id = get_video_id(link)
                 if not video_id:
                     return {"error": f"Invalid YouTube URL: {link}"}, 400
                 
-                transcript = download_transcript(video_id)
-                if transcript is None:
-                    return {"error": f"Unable to download transcript for video: {link}"}, 500
-                
-                title = get_video_title(video_id)
-                
-                videos.append({
-                    "link": link,
-                    "video_id": video_id,
-                    "title": title,
-                    "transcript": transcript
-                })
+                if video_id in existing_videos:
+                    # 如果视频已存在，保留现有数据
+                    new_videos.append(existing_videos[video_id])
+                else:
+                    # 如果是新视频，下载字幕和标题
+                    transcript = download_transcript(video_id)
+                    if transcript is None:
+                        return {"error": f"Unable to download transcript for video: {link}"}, 500
+                    
+                    title = get_video_title(video_id)
+                    
+                    new_videos.append({
+                        "link": link,
+                        "video_id": video_id,
+                        "title": title,
+                        "transcript": transcript
+                    })
+            
+            # 合并现有视频和新视频
+            all_videos = list(existing_videos.values()) + new_videos
             
             video_info = {
                 'channel_id': channel_id,
-                'videos': videos
+                'videos': all_videos
             }
             redis_client.hset('video_list', channel_id, json.dumps(video_info))
             
