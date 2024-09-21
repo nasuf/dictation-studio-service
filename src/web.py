@@ -239,7 +239,7 @@ class YouTubeVideoList(Resource):
             videos = video_info.get('videos', [])
             
             simplified_videos = [
-                {"video_id": video["video_id"], "link": video["link"]}
+                {"video_id": video["video_id"], "link": video["link"], "title": video["title"]}
                 for video in videos
             ]
             
@@ -262,7 +262,7 @@ class VideoTranscript(Resource):
             
             for video in videos:
                 if video["video_id"] == video_id:
-                    return {"channel_id": channel_id, "video_id": video_id, "transcript": video["transcript"]}, 200
+                    return {"channel_id": channel_id, "video_id": video_id, "title": video["title"], "transcript": video["transcript"]}, 200
             
             return {"error": "Video not found in the channel"}, 404
         except Exception as e:
