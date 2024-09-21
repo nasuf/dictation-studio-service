@@ -458,14 +458,39 @@ class GoogleTokenVerification(Resource):
 @ns.route('/check-login')
 class CheckLogin(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 401: 'Unauthorized'})
+    @ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
-        """Check if the user is logged in and the session is valid"""
-        current_user = get_jwt_identity()
-        return {"message": "User is logged in", "user": current_user}, 200
+        """Check if the user is logged in, return user info, and refresh the JWT token"""
+        try:
+            current_user_email = get_jwt_identity()
+            user_data = redis_user_client.hgetall(f"user:{current_user_email}")
+            
+            if not user_data:
+                logger.warning(f"User data not found for email: {current_user_email}")
+                return {"error": "User not found"}, 401
+
+            # Convert byte strings to regular strings
+            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items()}
+
+            # Create a new JWT token
+            new_token = create_access_token(identity=current_user_email)
+
+            response_data = {
+                "message": "User is logged in",
+                "user": user_info,
+                "jwt_token": new_token
+            }
+
+            logger.info(f"Successfully checked login and refreshed token for user: {current_user_email}")
+            return response_data, 200
+
+        except Exception as e:
+            logger.error(f"Error in check-login: {str(e)}")
+            return {"error": "An error occurred while checking login"}, 500
 
 if __name__ == '__main__':
     app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
+    app.config['JWT_TOKEN_LOCATION'] = ['headers']  # Only allow JWT tokens in headers
     jwt = JWTManager(app)
     app.run(debug=True, host='0.0.0.0', port=4001)
