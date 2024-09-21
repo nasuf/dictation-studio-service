@@ -85,6 +85,12 @@ channel_info_model = api.model('ChannelInfo', {
     })))
 })
 
+# Add this new model
+video_list_model = api.model('VideoList', {
+    'channel_id': fields.String(required=True, description='YouTube channel ID'),
+    'video_links': fields.List(fields.String, required=True, description='List of YouTube video links')
+})
+
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @ns.expect(youtube_url_model)
@@ -148,6 +154,102 @@ class YouTubeChannel(Resource):
             return channels, 200  # Return the list directly, don't use jsonify
         except Exception as e:
             return {"error": f"Error retrieving channel information: {str(e)}"}, 500
+
+@ns.route('/video-list')
+class YouTubeVideoList(Resource):
+    @ns.expect(video_list_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    def post(self):
+        """Save YouTube video list with transcripts and titles for a channel to Redis"""
+        data = request.json
+        channel_id = data.get('channel_id')
+        video_links = data.get('video_links', [])
+        
+        if not channel_id or not video_links:
+            return {"error": "Invalid input. 'channel_id' and 'video_links' are required."}, 400
+
+        try:
+            videos = []
+            for link in video_links:
+                video_id = get_video_id(link)
+                if not video_id:
+                    return {"error": f"Invalid YouTube URL: {link}"}, 400
+                
+                transcript = download_transcript(video_id)
+                if transcript is None:
+                    return {"error": f"Unable to download transcript for video: {link}"}, 500
+                
+                videos.append({
+                    "link": link,
+                    "video_id": video_id,
+                    "transcript": transcript
+                })
+            
+            video_info = {
+                'channel_id': channel_id,
+                'videos': videos
+            }
+            redis_client.hset('video_list', channel_id, json.dumps(video_info))
+            
+            return {"message": f"Video list with transcripts for channel {channel_id} saved successfully"}, 200
+        except Exception as e:
+            return {"error": f"Error saving video list with transcripts and titles: {str(e)}"}, 500
+
+    @ns.doc(responses={200: 'Success', 500: 'Server Error'})
+    def get(self):
+        """Get all YouTube video lists with transcripts from Redis"""
+        try:
+            all_video_lists = redis_client.hgetall('video')
+            video_lists = []
+            for _, value in all_video_lists.items():
+                video_list_info = json.loads(value.decode())
+                video_lists.append(video_list_info)
+            return video_lists, 200
+        except Exception as e:
+            return {"error": f"Error retrieving video lists with transcripts: {str(e)}"}, 500
+
+@ns.route('/video-list/<string:channel_id>')
+class YouTubeVideoList(Resource):
+    @ns.doc(responses={200: 'Success', 404: 'Channel not found', 500: 'Server Error'})
+    def get(self, channel_id):
+        """Get video IDs and links for a specific channel"""
+        try:
+            video_info = redis_client.hget('video_list', channel_id)
+            if video_info is None:
+                return {"error": "Channel not found"}, 404
+            
+            video_info = json.loads(video_info.decode())
+            videos = video_info.get('videos', [])
+            
+            simplified_videos = [
+                {"video_id": video["video_id"], "link": video["link"]}
+                for video in videos
+            ]
+            
+            return {"channel_id": channel_id, "videos": simplified_videos}, 200
+        except Exception as e:
+            return {"error": f"Error retrieving video list: {str(e)}"}, 500
+
+@ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
+class VideoTranscript(Resource):
+    @ns.doc(responses={200: 'Success', 404: 'Not Found', 500: 'Server Error'})
+    def get(self, channel_id, video_id):
+        """Get transcript for a specific video in a channel"""
+        try:
+            video_info = redis_client.hget('video_list', channel_id)
+            if video_info is None:
+                return {"error": "Channel not found"}, 404
+            
+            video_info = json.loads(video_info.decode())
+            videos = video_info.get('videos', [])
+            
+            for video in videos:
+                if video["video_id"] == video_id:
+                    return {"channel_id": channel_id, "video_id": video_id, "transcript": video["transcript"]}, 200
+            
+            return {"error": "Video not found in the channel"}, 404
+        except Exception as e:
+            return {"error": f"Error retrieving video transcript: {str(e)}"}, 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
