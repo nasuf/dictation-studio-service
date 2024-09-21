@@ -1,17 +1,23 @@
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from flask import Flask, request, jsonify
+import json
+import re
+import logging
+from flask import Flask, request, jsonify, send_file
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
 import redis
-import re
-from config import REDIS_HOST, REDIS_PORT, REDIS_DB  # Changed from relative to absolute import
-import json
 import requests
 from bs4 import BeautifulSoup
+import tempfile
+from config import REDIS_HOST, REDIS_PORT, REDIS_DB
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -24,9 +30,22 @@ ns = api.namespace('api', description='YouTube Transcript operations')
 # Redis connection
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
-# Input model for Swagger
+# Input models for Swagger
 youtube_url_model = api.model('YouTubeURL', {
     'url': fields.String(required=True, description='YouTube video URL')
+})
+
+channel_info_model = api.model('ChannelInfo', {
+    'channels': fields.List(fields.Nested(api.model('Channel', {
+        'name': fields.String(required=True, description='YouTube channel name'),
+        'id': fields.String(required=True, description='YouTube channel ID'),
+        'image_url': fields.String(required=True, description='YouTube channel image URL')
+    })))
+})
+
+video_list_model = api.model('VideoList', {
+    'channel_id': fields.String(required=True, description='YouTube channel ID'),
+    'video_links': fields.List(fields.String, required=True, description='List of YouTube video links')
 })
 
 def get_video_id(url):
@@ -50,7 +69,7 @@ def download_transcript(video_id):
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
         available_languages = [t.language_code for t in transcript_list]
-        print(f"Available languages: {', '.join(available_languages)}")
+        logger.info(f"Available languages for video {video_id}: {', '.join(available_languages)}")
 
         english_languages = [lang for lang in available_languages if lang.startswith('en')]
 
@@ -75,7 +94,7 @@ def download_transcript(video_id):
 
         return formatted_transcript
     except Exception as e:
-        print(f"Error downloading transcript: {e}")
+        logger.error(f"Error downloading transcript for video {video_id}: {e}")
         return None
 
 def get_video_title(video_id):
@@ -87,23 +106,8 @@ def get_video_title(video_id):
         title = soup.find('meta', property='og:title')['content']
         return title
     except Exception as e:
-        print(f"Error getting video title: {e}")
+        logger.error(f"Error getting title for video {video_id}: {e}")
         return None
-
-# Update the channel_info_model
-channel_info_model = api.model('ChannelInfo', {
-    'channels': fields.List(fields.Nested(api.model('Channel', {
-        'name': fields.String(required=True, description='YouTube channel name'),
-        'id': fields.String(required=True, description='YouTube channel ID'),
-        'image_url': fields.String(required=True, description='YouTube channel image URL')
-    })))
-})
-
-# Add this new model
-video_list_model = api.model('VideoList', {
-    'channel_id': fields.String(required=True, description='YouTube channel ID'),
-    'video_links': fields.List(fields.String, required=True, description='List of YouTube video links')
-})
 
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
@@ -116,12 +120,15 @@ class YouTubeTranscript(Resource):
         
         video_id = get_video_id(youtube_url)
         if not video_id:
+            logger.warning(f"Invalid YouTube URL: {youtube_url}")
             return {"error": "Invalid YouTube URL"}, 400
 
         transcript = download_transcript(video_id)
         if transcript is None:
+            logger.error(f"Unable to download transcript for video: {video_id}")
             return {"error": "Unable to download transcript"}, 500
 
+        logger.info(f"Successfully retrieved transcript for video: {video_id}")
         return jsonify(transcript)
 
 @ns.route('/channel')
@@ -134,6 +141,7 @@ class YouTubeChannel(Resource):
         channels = data.get('channels', [])
         
         if not channels:
+            logger.warning("Invalid input: 'channels' list is empty")
             return {"error": "Invalid input. 'channels' list is required."}, 400
 
         try:
@@ -143,29 +151,31 @@ class YouTubeChannel(Resource):
                 channel_image_url = channel.get('image_url')
                 
                 if not channel_name or not channel_image_url or not channel_id:
+                    logger.warning(f"Invalid input for channel {channel_id}")
                     return {"error": f"Invalid input for channel {channel_id}. Name, id, and image_url are required."}, 400
 
-                # 检查频道是否已存在
                 existing_channel = redis_client.hget('video_channel', channel_id)
                 if existing_channel:
                     existing_channel = json.loads(existing_channel.decode())
-                    # 更新现有频道信息
                     existing_channel.update({
                         'name': channel_name,
                         'image_url': channel_image_url
                     })
                     redis_client.hset('video_channel', channel_id, json.dumps(existing_channel))
+                    logger.info(f"Updated existing channel: {channel_id}")
                 else:
-                    # 添加新频道
                     channel_info = {
                         'id': channel_id,
                         'name': channel_name,
                         'image_url': channel_image_url
                     }
                     redis_client.hset('video_channel', channel_id, json.dumps(channel_info))
+                    logger.info(f"Added new channel: {channel_id}")
             
+            logger.info(f"Successfully saved/updated {len(channels)} channel(s)")
             return {"message": f"{len(channels)} channel(s) information saved or updated successfully"}, 200
         except Exception as e:
+            logger.error(f"Error saving channel information: {str(e)}")
             return {"error": f"Error saving channel information: {str(e)}"}, 500
 
     @ns.doc(responses={200: 'Success', 500: 'Server Error'})
@@ -177,8 +187,10 @@ class YouTubeChannel(Resource):
             for _, value in all_channels.items():
                 channel_info = json.loads(value.decode())
                 channels.append(channel_info)
+            logger.info(f"Retrieved {len(channels)} channels from Redis")
             return channels, 200
         except Exception as e:
+            logger.error(f"Error retrieving channel information: {str(e)}")
             return {"error": f"Error retrieving channel information: {str(e)}"}, 500
 
 @ns.route('/video-list')
@@ -192,14 +204,14 @@ class YouTubeVideoList(Resource):
         video_links = data.get('video_links', [])
         
         if not channel_id or not video_links:
+            logger.warning("Invalid input: 'channel_id' or 'video_links' is missing")
             return {"error": "Invalid input. 'channel_id' and 'video_links' are required."}, 400
 
         try:
-            # 检查频道是否存在
             if not redis_client.hexists('video_channel', channel_id):
+                logger.warning(f"Channel with id {channel_id} does not exist")
                 return {"error": f"Channel with id {channel_id} does not exist."}, 400
 
-            # 获取现有的视频列表
             existing_video_info = redis_client.hget('video_list', channel_id)
             if existing_video_info:
                 existing_video_info = json.loads(existing_video_info.decode())
@@ -211,15 +223,16 @@ class YouTubeVideoList(Resource):
             for link in video_links:
                 video_id = get_video_id(link)
                 if not video_id:
+                    logger.warning(f"Invalid YouTube URL: {link}")
                     return {"error": f"Invalid YouTube URL: {link}"}, 400
                 
                 if video_id in existing_videos:
-                    # 如果视频已存在，保留现有数据
                     new_videos.append(existing_videos[video_id])
+                    logger.info(f"Using existing data for video: {video_id}")
                 else:
-                    # 如果是新视频，下载字幕和标题
                     transcript = download_transcript(video_id)
                     if transcript is None:
+                        logger.error(f"Unable to download transcript for video: {link}")
                         return {"error": f"Unable to download transcript for video: {link}"}, 500
                     
                     title = get_video_title(video_id)
@@ -230,8 +243,8 @@ class YouTubeVideoList(Resource):
                         "title": title,
                         "transcript": transcript
                     })
+                    logger.info(f"Added new video: {video_id}")
             
-            # 合并现有视频和新视频
             all_videos = list(existing_videos.values()) + new_videos
             
             video_info = {
@@ -240,8 +253,10 @@ class YouTubeVideoList(Resource):
             }
             redis_client.hset('video_list', channel_id, json.dumps(video_info))
             
+            logger.info(f"Successfully saved video list for channel {channel_id}")
             return {"message": f"Video list with transcripts and titles for channel {channel_id} saved successfully"}, 200
         except Exception as e:
+            logger.error(f"Error saving video list: {str(e)}")
             return {"error": f"Error saving video list with transcripts and titles: {str(e)}"}, 500
 
     @ns.doc(responses={200: 'Success', 500: 'Server Error'})
@@ -253,18 +268,21 @@ class YouTubeVideoList(Resource):
             for _, value in all_video_lists.items():
                 video_list_info = json.loads(value.decode())
                 video_lists.append(video_list_info)
+            logger.info(f"Retrieved video lists for {len(video_lists)} channels")
             return video_lists, 200
         except Exception as e:
+            logger.error(f"Error retrieving video lists: {str(e)}")
             return {"error": f"Error retrieving video lists with transcripts: {str(e)}"}, 500
 
 @ns.route('/video-list/<string:channel_id>')
-class YouTubeVideoList(Resource):
+class YouTubeVideoListByChannel(Resource):
     @ns.doc(responses={200: 'Success', 404: 'Channel not found', 500: 'Server Error'})
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
         try:
             video_info = redis_client.hget('video_list', channel_id)
             if video_info is None:
+                logger.info(f"No videos found for channel: {channel_id}")
                 return {"channel_id": channel_id, "videos": []}, 200
             
             video_info = json.loads(video_info.decode())
@@ -275,8 +293,10 @@ class YouTubeVideoList(Resource):
                 for video in videos
             ]
             
+            logger.info(f"Retrieved {len(simplified_videos)} videos for channel: {channel_id}")
             return {"channel_id": channel_id, "videos": simplified_videos}, 200
         except Exception as e:
+            logger.error(f"Error retrieving video list for channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving video list: {str(e)}"}, 500
 
 @ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
@@ -287,6 +307,7 @@ class VideoTranscript(Resource):
         try:
             video_info = redis_client.hget('video_list', channel_id)
             if video_info is None:
+                logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
             
             video_info = json.loads(video_info.decode())
@@ -294,11 +315,85 @@ class VideoTranscript(Resource):
             
             for video in videos:
                 if video["video_id"] == video_id:
+                    logger.info(f"Retrieved transcript for video {video_id} in channel {channel_id}")
                     return {"channel_id": channel_id, "video_id": video_id, "title": video["title"], "transcript": video["transcript"]}, 200
             
+            logger.warning(f"Video {video_id} not found in channel {channel_id}")
             return {"error": "Video not found in the channel"}, 404
         except Exception as e:
+            logger.error(f"Error retrieving transcript for video {video_id} in channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving video transcript: {str(e)}"}, 500
+
+@ns.route('/export-data')
+class ExportData(Resource):
+    @ns.doc(responses={200: 'Success', 500: 'Server Error'})
+    def get(self):
+        """Export all data from Redis to a JSON file"""
+        try:
+            data = {
+                'video_channel': {},
+                'video_list': {}
+            }
+
+            all_channels = redis_client.hgetall('video_channel')
+            for key, value in all_channels.items():
+                data['video_channel'][key.decode()] = json.loads(value.decode())
+
+            all_video_lists = redis_client.hgetall('video_list')
+            for key, value in all_video_lists.items():
+                data['video_list'][key.decode()] = json.loads(value.decode())
+
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
+                json.dump(data, temp_file, indent=2)
+                temp_file_path = temp_file.name
+
+            logger.info("Successfully exported all data to JSON file")
+            return send_file(temp_file_path, as_attachment=True, download_name='redis_export.json', mimetype='application/json')
+
+        except Exception as e:
+            logger.error(f"Error exporting data: {str(e)}")
+            return {"error": f"Error exporting data: {str(e)}"}, 500
+        finally:
+            if 'temp_file_path' in locals():
+                os.unlink(temp_file_path)
+
+@ns.route('/import-data')
+class ImportData(Resource):
+    @ns.expect(api.parser().add_argument('file', location='files', type='file', required=True))
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    def post(self):
+        """Import data from a JSON file to Redis"""
+        try:
+            if 'file' not in request.files:
+                logger.warning("No file part in the request")
+                return {"error": "No file part in the request"}, 400
+            
+            file = request.files['file']
+            if file.filename == '':
+                logger.warning("No selected file")
+                return {"error": "No selected file"}, 400
+            
+            if not file.filename.lower().endswith('.json'):
+                logger.warning("Invalid file type")
+                return {"error": "Invalid file type. Please upload a JSON file"}, 400
+
+            data = json.load(file)
+
+            for key, value in data.get('video_channel', {}).items():
+                redis_client.hset('video_channel', key, json.dumps(value))
+
+            for key, value in data.get('video_list', {}).items():
+                redis_client.hset('video_list', key, json.dumps(value))
+
+            logger.info("Successfully imported data from JSON file")
+            return {"message": "Data imported successfully"}, 200
+
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON format in the uploaded file")
+            return {"error": "Invalid JSON format in the uploaded file"}, 400
+        except Exception as e:
+            logger.error(f"Error importing data: {str(e)}")
+            return {"error": f"Error importing data: {str(e)}"}, 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
