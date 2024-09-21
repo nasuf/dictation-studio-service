@@ -5,3 +5,6 @@ flask-cors==3.0.10
 redis==4.5.4
 requests==2.31.0
 beautifulsoup4==4.12.2
+google-auth==2.22.0
+google-auth-oauthlib==1.0.0
+google-api-python-client==2.88.0

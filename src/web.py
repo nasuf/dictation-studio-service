@@ -11,7 +11,11 @@ import redis
 import requests
 from bs4 import BeautifulSoup
 import tempfile
-from config import REDIS_HOST, REDIS_PORT, REDIS_DB
+from config import REDIS_HOST, REDIS_PORT, REDIS_DB, GOOGLE_CLIENT_ID
+from google.oauth2 import id_token
+from google.auth.transport import requests
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,10 +26,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-api = Api(app, version='1.0', title='YouTube Transcript Downloader API',
-          description='API for downloading YouTube video transcripts')
+api = Api(app, version='1.0', title='Daily Dictation Service API',
+          description='API for daily dictation service')
 
-ns = api.namespace('api', description='YouTube Transcript operations')
+ns = api.namespace('api', description='Daily Dictation Service Operations')
 
 # Redis connection
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
@@ -394,6 +398,40 @@ class ImportData(Resource):
         except Exception as e:
             logger.error(f"Error importing data: {str(e)}")
             return {"error": f"Error importing data: {str(e)}"}, 500
+
+@ns.route('/verify-google-token')
+class GoogleTokenVerification(Resource):
+    @ns.expect(api.model('GoogleToken', {
+        'token': fields.String(required=True, description='Google Access token')
+    }))
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Token', 500: 'Server Error'})
+    def post(self):
+        """Verify Google Access token and get user info"""
+        data = request.json
+        token = data.get('token')
+
+        try:
+            credentials = Credentials(token=token)
+            service = build('oauth2', 'v2', credentials=credentials)
+            user_info = service.userinfo().get().execute()
+
+            userid = user_info['id']
+            email = user_info['email']
+            name = user_info.get('name')
+            picture = user_info.get('picture')
+
+            logger.info(f"Successfully verified Google token for user: {email}")
+            return {
+                "message": "Token verified successfully",
+                "user_id": userid,
+                "email": email,
+                "name": name,
+                "picture": picture
+            }, 200
+
+        except Exception as e:
+            logger.warning(f"Invalid Google token: {str(e)}")
+            return {"error": "Invalid token"}, 400
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
