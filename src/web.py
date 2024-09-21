@@ -15,7 +15,7 @@ from config import REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB
 from google.auth.transport import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
+app.config['JWT_TOKEN_LOCATION'] = ['headers']  # Only allow JWT tokens in headers
+jwt = JWTManager(app)
 
 api = Api(app, version='1.0', title='Daily Dictation Service API',
           description='API for daily dictation service')
@@ -114,12 +118,18 @@ def get_video_title(video_id):
     except Exception as e:
         logger.error(f"Error getting title for video {video_id}: {e}")
         return None
+    
+@jwt.unauthorized_loader
+def unauthorized_response(callback):
+    return jsonify({
+        'error': 'Unauthorized Access'
+    }), 401
 
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @jwt_required()
     @ns.expect(youtube_url_model)
-    @ns.doc(responses={200: 'Success', 400: 'Invalid URL', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
         """Get the transcript for a YouTube video"""
         data = request.json
@@ -142,7 +152,7 @@ class YouTubeTranscript(Resource):
 class YouTubeChannel(Resource):
     @jwt_required()
     @ns.expect(channel_info_model)
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
         """Save YouTube channel information to Redis"""
         data = request.json
@@ -186,7 +196,8 @@ class YouTubeChannel(Resource):
             logger.error(f"Error saving channel information: {str(e)}")
             return {"error": f"Error saving channel information: {str(e)}"}, 500
 
-    @ns.doc(responses={200: 'Success', 500: 'Server Error'})
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self):
         """Get all YouTube channel information from Redis"""
         try:
@@ -205,7 +216,7 @@ class YouTubeChannel(Resource):
 class YouTubeVideoList(Resource):
     @jwt_required()
     @ns.expect(video_list_model)
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
         """Save YouTube video list with transcripts and titles for a channel to Redis"""
         data = request.json
@@ -268,7 +279,8 @@ class YouTubeVideoList(Resource):
             logger.error(f"Error saving video list: {str(e)}")
             return {"error": f"Error saving video list with transcripts and titles: {str(e)}"}, 500
 
-    @ns.doc(responses={200: 'Success', 500: 'Server Error'})
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self):
         """Get all YouTube video lists with transcripts from Redis"""
         try:
@@ -286,7 +298,7 @@ class YouTubeVideoList(Resource):
 @ns.route('/video-list/<string:channel_id>')
 class YouTubeVideoListByChannel(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 404: 'Channel not found', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
         try:
@@ -312,7 +324,7 @@ class YouTubeVideoListByChannel(Resource):
 @ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
 class VideoTranscript(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 404: 'Not Found', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self, channel_id, video_id):
         """Get transcript for a specific video in a channel"""
         try:
@@ -338,7 +350,7 @@ class VideoTranscript(Resource):
 @ns.route('/export-data')
 class ExportData(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self):
         """Export all data from Redis to a JSON file"""
         try:
@@ -373,7 +385,7 @@ class ExportData(Resource):
 class ImportData(Resource):
     @jwt_required()
     @ns.expect(api.parser().add_argument('file', location='files', type='file', required=True))
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
         """Import data from a JSON file to Redis"""
         try:
@@ -487,10 +499,25 @@ class CheckLogin(Resource):
         except Exception as e:
             logger.error(f"Error in check-login: {str(e)}")
             return {"error": "An error occurred while checking login"}, 500
+        
+@ns.route('/logout')
+class Logout(Resource):
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
+    def post(self):
+        """Logout the current user"""
+        try:
+            current_user_email = get_jwt_identity()
+            
+            response = jsonify({"message": "Successfully logged out"})
+            unset_jwt_cookies(response)
+            
+            logger.info(f"User {current_user_email} successfully logged out")
+            return response
+
+        except Exception as e:
+            logger.error(f"Error during logout: {str(e)}")
+            return {"error": "An error occurred during logout"}, 500
 
 if __name__ == '__main__':
-    app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
-    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
-    app.config['JWT_TOKEN_LOCATION'] = ['headers']  # Only allow JWT tokens in headers
-    jwt = JWTManager(app)
     app.run(debug=True, host='0.0.0.0', port=4001)
