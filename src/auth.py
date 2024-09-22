@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB)
 
 # Create a namespace for user-related routes
-auth_ns = Namespace('authentication', description='Authentication operations')
+auth_ns = Namespace('auth', description='Authentication operations')
 
 # Define models
 google_token_model = auth_ns.model('GoogleToken', {

@@ -17,7 +17,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
-from authentication import auth_ns
+from auth import auth_ns
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,7 +35,7 @@ jwt = JWTManager(app)
 api = Api(app, version='1.0', title='Daily Dictation Service API',
           description='API for daily dictation service')
 
-ns = api.namespace('api', description='Daily Dictation Service Operations')
+ns = api.namespace('service', path='/daily-dictation/service', description='Daily Dictation Service Operations')
 
 # Redis connection
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB)
@@ -420,7 +420,7 @@ class ImportData(Resource):
             return {"error": f"Error importing data: {str(e)}"}, 500
 
 # Add user namespace to API
-api.add_namespace(auth_ns, path='/api/auth')
+api.add_namespace(auth_ns, path='/daily-dictation/auth')
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
