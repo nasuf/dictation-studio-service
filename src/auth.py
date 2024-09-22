@@ -183,8 +183,18 @@ class Register(Resource):
             }
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
+            # Create JWT token
+            jwt_token = create_access_token(identity=email)
+
+            # Prepare user info to return (excluding password)
+            user_info = {k: v for k, v in user_data.items() if k != 'password'}
+
             logger.info(f"User registered successfully: {email}")
-            return {"message": "User registered successfully"}, 200
+            return {
+                "message": "User registered successfully",
+                "user": user_info,
+                "jwt_token": jwt_token
+            }, 200
 
         except Exception as e:
             logger.error(f"Error during registration: {str(e)}")
