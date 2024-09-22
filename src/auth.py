@@ -6,6 +6,8 @@ from googleapiclient.discovery import build
 import redis
 import logging
 from config import REDIS_HOST, REDIS_PORT, REDIS_USER_DB
+import hashlib
+import os
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -20,6 +22,31 @@ auth_ns = Namespace('auth', description='Authentication operations')
 google_token_model = auth_ns.model('GoogleToken', {
     'token': fields.String(required=True, description='Google Access token')
 })
+
+# Add new model for registration
+register_model = auth_ns.model('Register', {
+    'username': fields.String(required=True, description='Username'),
+    'email': fields.String(required=True, description='User email'),
+    'password': fields.String(required=True, description='User password (salt:hash)'),
+    'avatar': fields.String(required=True, description='User avatar URL')
+})
+
+def hash_password(password):
+    """
+    Perform server-side encryption on the password.
+    """
+    salt = os.urandom(32)  # 生成一个32字节的随机盐
+    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return salt + key  # 将盐和密钥连接起来存储
+
+def verify_password(stored_password, provided_password):
+    """
+    Verify the provided password against the stored password.
+    """
+    salt = stored_password[:32]  # 盐是前32字节
+    stored_key = stored_password[32:]
+    new_key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
+    return new_key == stored_key
 
 @auth_ns.route('/verify-google-token')
 class GoogleTokenVerification(Resource):
@@ -38,7 +65,7 @@ class GoogleTokenVerification(Resource):
             userid = user_info['id']
             email = user_info['email']
             name = user_info.get('name')
-            picture = user_info.get('picture')
+            avatar = user_info.get('picture')
 
             # Create a JWT token
             jwt_token = create_access_token(identity=email)
@@ -48,7 +75,7 @@ class GoogleTokenVerification(Resource):
                 "user_id": userid,
                 "email": email,
                 "name": name,
-                "picture": picture
+                "avatar": avatar
             }
             redis_user_client.hset(f"user:{email}", mapping=user_data)
 
@@ -58,7 +85,7 @@ class GoogleTokenVerification(Resource):
                 "user_id": userid,
                 "email": email,
                 "name": name,
-                "picture": picture,
+                "avatar": avatar,
                 "jwt_token": jwt_token
             }, 200
 
@@ -117,3 +144,42 @@ class Logout(Resource):
         except Exception as e:
             logger.error(f"Error during logout: {str(e)}")
             return {"error": "An error occurred during logout"}, 500
+
+@auth_ns.route('/register')
+class Register(Resource):
+    @auth_ns.expect(register_model)
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    def post(self):
+        """Register a new user"""
+        data = request.json
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+        avatar = data.get('avatar')
+
+        if not all([username, email, password, avatar]):
+            return {"error": "All fields are required"}, 400
+
+        try:
+            # Check if user already exists
+            if redis_user_client.exists(f"user:{email}"):
+                return {"error": "User with this email already exists"}, 400
+
+            # Hash the password
+            hashed_password = hash_password(password)
+
+            # Store user data in Redis
+            user_data = {
+                "username": username,
+                "email": email,
+                "password": hashed_password,
+                "avatar": avatar
+            }
+            redis_user_client.hmset(f"user:{email}", user_data)
+
+            logger.info(f"User registered successfully: {email}")
+            return {"message": "User registered successfully"}, 200
+
+        except Exception as e:
+            logger.error(f"Error during registration: {str(e)}")
+            return {"error": "An error occurred during registration"}, 500
