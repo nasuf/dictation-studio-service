@@ -31,6 +31,12 @@ register_model = auth_ns.model('Register', {
     'avatar': fields.String(required=True, description='User avatar URL')
 })
 
+# Add new model for login
+login_model = auth_ns.model('Login', {
+    'username_or_email': fields.String(required=True, description='Username or Email'),
+    'password': fields.String(required=True, description='User password')
+})
+
 def hash_password(password):
     """
     Perform server-side encryption on the password.
@@ -77,7 +83,7 @@ class GoogleTokenVerification(Resource):
                 "name": name,
                 "avatar": avatar
             }
-            redis_user_client.hset(f"user:{email}", mapping=user_data)
+            redis_user_client.hset(f"user:{email}", mapping={k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
             logger.info(f"Successfully verified Google token and stored user info for: {email}")
             return {
@@ -108,7 +114,7 @@ class CheckLogin(Resource):
                 return {"error": "User not found"}, 401
 
             # Convert byte strings to regular strings
-            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items()}
+            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
 
             # Create a new JWT token
             new_token = create_access_token(identity=current_user_email)
@@ -175,7 +181,7 @@ class Register(Resource):
                 "password": hashed_password,
                 "avatar": avatar
             }
-            redis_user_client.hmset(f"user:{email}", user_data)
+            redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
             logger.info(f"User registered successfully: {email}")
             return {"message": "User registered successfully"}, 200
@@ -183,3 +189,56 @@ class Register(Resource):
         except Exception as e:
             logger.error(f"Error during registration: {str(e)}")
             return {"error": "An error occurred during registration"}, 500
+
+@auth_ns.route('/login')
+class Login(Resource):
+    @auth_ns.expect(login_model)
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
+    def post(self):
+        """Login a user"""
+        data = request.json
+        username_or_email = data.get('username_or_email')
+        password = data.get('password')
+
+        if not username_or_email or not password:
+            return {"error": "Username/Email and password are required"}, 400
+
+        try:
+            # Check if the input is an email or username
+            if '@' in username_or_email:
+                user_key = f"user:{username_or_email}"
+            else:
+                # Find the user by username
+                for key in redis_user_client.scan_iter("user:*"):
+                    user_data = redis_user_client.hgetall(key)
+                    if user_data.get(b'username', b'').decode('utf-8') == username_or_email:
+                        user_key = key.decode('utf-8')
+                        break
+                else:
+                    return {"error": "User not found"}, 401
+
+            user_data = redis_user_client.hgetall(user_key)
+            if not user_data:
+                return {"error": "User not found"}, 401
+
+            stored_password = user_data.get(b'password')
+            if not stored_password or not verify_password(stored_password, password):
+                return {"error": "Invalid credentials"}, 401
+
+            # User authenticated, create JWT token
+            email = user_data.get(b'email').decode('utf-8')
+            jwt_token = create_access_token(identity=email)
+
+            # Prepare user info
+            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+
+            logger.info(f"User logged in successfully: {email}")
+            return {
+                "message": "Login successful",
+                "user": user_info,
+                "jwt_token": jwt_token
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error during login: {str(e)}")
+            return {"error": "An error occurred during login"}, 500
