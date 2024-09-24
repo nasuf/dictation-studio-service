@@ -37,6 +37,11 @@ login_model = auth_ns.model('Login', {
     'password': fields.String(required=True, description='User password')
 })
 
+# Add new model for email check
+email_check_model = auth_ns.model('EmailCheck', {
+    'email': fields.String(required=True, description='Email to check')
+})
+
 def hash_password(password):
     """
     Perform server-side encryption on the password.
@@ -68,30 +73,47 @@ class GoogleTokenVerification(Resource):
             service = build('oauth2', 'v2', credentials=credentials)
             user_info = service.userinfo().get().execute()
 
-            userid = user_info['id']
             email = user_info['email']
             name = user_info.get('name')
             avatar = user_info.get('picture')
 
+            # Check if user already exists in Redis
+            user_exists = redis_user_client.exists(f"user:{email}")
+
             # Create a JWT token
             jwt_token = create_access_token(identity=email)
 
-            # Store user information in Redis
-            user_data = {
-                "user_id": userid,
-                "email": email,
-                "name": name,
-                "avatar": avatar
-            }
-            redis_user_client.hset(f"user:{email}", mapping={k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
+            if user_exists:
+                # Update user information in Redis, preserving the existing role
+                existing_user_data = redis_user_client.hgetall(f"user:{email}")
+                existing_role = existing_user_data.get(b'role', b'user').decode('utf-8')
+                
+                user_data = {
+                    "email": email,
+                    "name": name,
+                    "avatar": avatar,
+                    "role": existing_role
+                }
+                redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
+                logger.info(f"Updated existing user via Google: {email}")
+            else:
+                # Store new user information in Redis
+                user_data = {
+                    "email": email,
+                    "name": name,
+                    "avatar": avatar,
+                    "role": "user"
+                }
+                redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
+                logger.info(f"New user registered via Google: {email}")
 
-            logger.info(f"Successfully verified Google token and stored user info for: {email}")
+            # Retrieve user info from Redis to ensure we return the most up-to-date information
+            stored_user_data = redis_user_client.hgetall(f"user:{email}")
+            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in stored_user_data.items() if k != b'password'}
+
             return {
                 "message": "Token verified successfully",
-                "user_id": userid,
-                "email": email,
-                "name": name,
-                "avatar": avatar,
+                "user": user_info,
                 "jwt_token": jwt_token
             }, 200
 
@@ -179,7 +201,8 @@ class Register(Resource):
                 "username": username,
                 "email": email,
                 "password": hashed_password,
-                "avatar": avatar
+                "avatar": avatar,
+                "role": "user"  # Add the role field
             }
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
@@ -252,3 +275,30 @@ class Login(Resource):
         except Exception as e:
             logger.error(f"Error during login: {str(e)}")
             return {"error": "An error occurred during login"}, 500
+
+@auth_ns.route('/check-email')
+class CheckEmail(Resource):
+    @auth_ns.expect(email_check_model)
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    def post(self):
+        """Check if an email already exists"""
+        data = request.json
+        email = data.get('email')
+
+        if not email:
+            return {"error": "Email is required"}, 400
+
+        try:
+            # Check if user already exists
+            user_exists = redis_user_client.exists(f"user:{email}")
+
+            if user_exists:
+                logger.info(f"Email check: {email} already exists")
+                return {"exists": True, "message": "Email already exists"}, 200
+            else:
+                logger.info(f"Email check: {email} is available")
+                return {"exists": False, "message": "Email is available"}, 200
+
+        except Exception as e:
+            logger.error(f"Error checking email existence: {str(e)}")
+            return {"error": "An error occurred while checking email"}, 500
