@@ -18,6 +18,7 @@ from googleapiclient.discovery import build
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
+from user import user_ns
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -421,6 +422,7 @@ class ImportData(Resource):
 
 # Add user namespace to API
 api.add_namespace(auth_ns, path='/daily-dictation/auth')
+api.add_namespace(user_ns, path='/daily-dictation/user')
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
