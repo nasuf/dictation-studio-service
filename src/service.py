@@ -60,6 +60,10 @@ video_list_model = api.model('VideoList', {
     'video_links': fields.List(fields.String, required=True, description='List of YouTube video links')
 })
 
+# Add these constants at the top of the file
+CHANNEL_PREFIX = "channel:"
+VIDEO_PREFIX = "video:"
+
 def get_video_id(url):
     """Extract the video ID from a YouTube URL."""
     video_id = None
@@ -121,7 +125,7 @@ def get_video_title(video_id):
         logger.error(f"Error getting title for video {video_id}: {e}")
         return None
     
-@jwt.unauthorized_loader
+@jwt.unauthorized_response
 def unauthorized_response(callback):
     return jsonify({
         'error': 'Unauthorized Access'
@@ -174,14 +178,15 @@ class YouTubeChannel(Resource):
                     logger.warning(f"Invalid input for channel {channel_id}")
                     return {"error": f"Invalid input for channel {channel_id}. Name, id, and image_url are required."}, 400
 
-                existing_channel = redis_client.hget('video_channel', channel_id)
+                channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+                existing_channel = redis_client.get(channel_key)
                 if existing_channel:
-                    existing_channel = json.loads(existing_channel.decode())
+                    existing_channel = json.loads(existing_channel)
                     existing_channel.update({
                         'name': channel_name,
                         'image_url': channel_image_url
                     })
-                    redis_client.hset('video_channel', channel_id, json.dumps(existing_channel))
+                    redis_client.set(channel_key, json.dumps(existing_channel))
                     logger.info(f"Updated existing channel: {channel_id}")
                 else:
                     channel_info = {
@@ -189,7 +194,7 @@ class YouTubeChannel(Resource):
                         'name': channel_name,
                         'image_url': channel_image_url
                     }
-                    redis_client.hset('video_channel', channel_id, json.dumps(channel_info))
+                    redis_client.set(channel_key, json.dumps(channel_info))
                     logger.info(f"Added new channel: {channel_id}")
             
             logger.info(f"Successfully saved/updated {len(channels)} channel(s)")
@@ -202,13 +207,12 @@ class YouTubeChannel(Resource):
     def get(self):
         """Get all YouTube channel information from Redis"""
         try:
-            all_channels = redis_client.hgetall('video_channel')
-            channels = []
-            for _, value in all_channels.items():
-                channel_info = json.loads(value.decode())
-                channels.append(channel_info)
-            logger.info(f"Retrieved {len(channels)} channels from Redis")
-            return channels, 200
+            all_channels = []
+            for key in redis_client.scan_iter(f"{CHANNEL_PREFIX}*"):
+                channel_info = json.loads(redis_client.get(key))
+                all_channels.append(channel_info)
+            logger.info(f"Retrieved {len(all_channels)} channels from Redis")
+            return all_channels, 200
         except Exception as e:
             logger.error(f"Error retrieving channel information: {str(e)}")
             return {"error": f"Error retrieving channel information: {str(e)}"}, 500
@@ -229,13 +233,15 @@ class YouTubeVideoList(Resource):
             return {"error": "Invalid input. 'channel_id' and 'video_links' are required."}, 400
 
         try:
-            if not redis_client.hexists('video_channel', channel_id):
+            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+            if not redis_client.exists(channel_key):
                 logger.warning(f"Channel with id {channel_id} does not exist")
                 return {"error": f"Channel with id {channel_id} does not exist."}, 400
 
-            existing_video_info = redis_client.hget('video', channel_id)
+            video_list_key = f"{VIDEO_LIST_PREFIX}{channel_id}"
+            existing_video_info = redis_client.get(video_list_key)
             if existing_video_info:
-                existing_video_info = json.loads(existing_video_info.decode())
+                existing_video_info = json.loads(existing_video_info)
                 existing_videos = {video['video_id']: video for video in existing_video_info.get('videos', [])}
             else:
                 existing_videos = {}
@@ -272,7 +278,7 @@ class YouTubeVideoList(Resource):
                 'channel_id': channel_id,
                 'videos': all_videos
             }
-            redis_client.hset('video_list', channel_id, json.dumps(video_info))
+            redis_client.set(video_list_key, json.dumps(video_info))
             
             logger.info(f"Successfully saved video list for channel {channel_id}")
             return {"message": f"Video list with transcripts and titles for channel {channel_id} saved successfully"}, 200
@@ -285,10 +291,9 @@ class YouTubeVideoList(Resource):
     def get(self):
         """Get all YouTube video lists with transcripts from Redis"""
         try:
-            all_video_lists = redis_client.hgetall('video_list')
             video_lists = []
-            for _, value in all_video_lists.items():
-                video_list_info = json.loads(value.decode())
+            for key in redis_client.scan_iter(f"{VIDEO_LIST_PREFIX}*"):
+                video_list_info = json.loads(redis_client.get(key))
                 video_lists.append(video_list_info)
             logger.info(f"Retrieved video lists for {len(video_lists)} channels")
             return video_lists, 200
@@ -302,12 +307,12 @@ class YouTubeVideoListByChannel(Resource):
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
         try:
-            video_info = redis_client.hget('video_list', channel_id)
+            video_info = redis_client.get(f"{VIDEO_LIST_PREFIX}{channel_id}")
             if video_info is None:
                 logger.info(f"No videos found for channel: {channel_id}")
                 return {"channel_id": channel_id, "videos": []}, 200
             
-            video_info = json.loads(video_info.decode())
+            video_info = json.loads(video_info)
             videos = video_info.get('videos', [])
             
             simplified_videos = [
@@ -328,12 +333,12 @@ class VideoTranscript(Resource):
     def get(self, channel_id, video_id):
         """Get transcript for a specific video in a channel"""
         try:
-            video_info = redis_client.hget('video_list', channel_id)
+            video_info = redis_client.get(f"{VIDEO_LIST_PREFIX}{channel_id}")
             if video_info is None:
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
             
-            video_info = json.loads(video_info.decode())
+            video_info = json.loads(video_info)
             videos = video_info.get('videos', [])
             
             for video in videos:
@@ -355,17 +360,17 @@ class ExportData(Resource):
         """Export all data from Redis to a JSON file"""
         try:
             data = {
-                'video_channel': {},
-                'video_list': {}
+                'channels': {},
+                'video_lists': {}
             }
 
-            all_channels = redis_client.hgetall('video_channel')
-            for key, value in all_channels.items():
-                data['video_channel'][key.decode()] = json.loads(value.decode())
+            for key in redis_client.scan_iter(f"{CHANNEL_PREFIX}*"):
+                channel_id = key.decode().split(':')[-1]
+                data['channels'][channel_id] = json.loads(redis_client.get(key))
 
-            all_video_lists = redis_client.hgetall('video_list')
-            for key, value in all_video_lists.items():
-                data['video_list'][key.decode()] = json.loads(value.decode())
+            for key in redis_client.scan_iter(f"{VIDEO_LIST_PREFIX}*"):
+                channel_id = key.decode().split(':')[-1]
+                data['video_lists'][channel_id] = json.loads(redis_client.get(key))
 
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
                 json.dump(data, temp_file, indent=2)
@@ -404,11 +409,11 @@ class ImportData(Resource):
 
             data = json.load(file)
 
-            for key, value in data.get('video_channel', {}).items():
-                redis_client.hset('video_channel', key, json.dumps(value))
+            for channel_id, value in data.get('channels', {}).items():
+                redis_client.set(f"{CHANNEL_PREFIX}{channel_id}", json.dumps(value))
 
-            for key, value in data.get('video_list', {}).items():
-                redis_client.hset('video_list', key, json.dumps(value))
+            for channel_id, value in data.get('video_lists', {}).items():
+                redis_client.set(f"{VIDEO_LIST_PREFIX}{channel_id}", json.dumps(value))
 
             logger.info("Successfully imported data from JSON file")
             return {"message": "Data imported successfully"}, 200
