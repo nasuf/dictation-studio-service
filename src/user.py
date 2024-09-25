@@ -111,4 +111,41 @@ class DictationProgress(Resource):
             logger.error(f"Error retrieving dictation progress: {str(e)}")
             return {"error": "An error occurred while retrieving dictation progress"}, 500
 
-# Add more user-related routes here if needed
+@user_ns.route('/progress/<string:channel_id>')
+class ChannelDictationProgress(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def get(self, channel_id):
+        """Get all dictation progress for a specific channel"""
+        try:
+            # Get user email from JWT token
+            user_email = get_jwt_identity()
+
+            # Get existing user data
+            user_key = f"user:{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get existing dictation progress
+            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+
+            # Filter progress for the specific channel
+            channel_progress = []
+            for key, value in dictation_progress.items():
+                if key.startswith(f"{channel_id}:"):
+                    video_id = key.split(':')[1]
+                    overall_completion = value['overallCompletion']
+                    channel_progress.append({
+                        'videoId': video_id,
+                        'overallCompletion': overall_completion
+                    })
+
+            logger.info(f"Retrieved all dictation progress for user: {user_email}, channel: {channel_id}")
+            return {"channelId": channel_id, "progress": channel_progress}, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving channel dictation progress: {str(e)}")
+            return {"error": "An error occurred while retrieving channel dictation progress"}, 500
+
