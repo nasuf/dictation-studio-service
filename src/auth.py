@@ -302,3 +302,25 @@ class CheckEmail(Resource):
         except Exception as e:
             logger.error(f"Error checking email existence: {str(e)}")
             return {"error": "An error occurred while checking email"}, 500
+        
+@auth_ns.route('/users')
+class Users(Resource):
+    @jwt_required()
+    @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
+    def get(self):
+        """Get all users"""
+        try:
+            # Get all user keys
+            user_keys = redis_user_client.keys("user:*")
+            users = []
+            for key in user_keys:
+                user_data = redis_user_client.hgetall(key)
+                user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+                users.append(user_info)
+
+            logger.info(f"Retrieved {len(users)} users")
+            return {"users": users}, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving users: {str(e)}")
+            return {"error": "An error occurred while retrieving users"}, 500
