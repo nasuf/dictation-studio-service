@@ -149,3 +149,25 @@ class ChannelDictationProgress(Resource):
             logger.error(f"Error retrieving channel dictation progress: {str(e)}")
             return {"error": "An error occurred while retrieving channel dictation progress"}, 500
 
+@user_ns.route('/all')
+class AllUsers(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
+    def get(self):
+        """Get all users' information"""
+        try:
+            # Get all user keys
+            user_keys = redis_user_client.keys("user:*")
+            users = []
+            for key in user_keys:
+                user_data = redis_user_client.hgetall(key)
+                user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+                users.append(user_info)
+
+            logger.info(f"Retrieved information for {len(users)} users")
+            return {"users": users}, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving all users' information: {str(e)}")
+            return {"error": "An error occurred while retrieving users' information"}, 500
+
