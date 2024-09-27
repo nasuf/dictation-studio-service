@@ -60,6 +60,13 @@ video_list_model = api.model('VideoList', {
     'video_links': fields.List(fields.String, required=True, description='List of YouTube video links')
 })
 
+transcript_update_model = api.model('TranscriptUpdate', {
+    'index': fields.Integer(required=True, description='Index of the transcript item to update'),
+    'start': fields.Float(required=True, description='Start time of the transcript item'),
+    'end': fields.Float(required=True, description='End time of the transcript item'),
+    'transcript': fields.String(required=True, description='Updated transcript text')
+})
+
 def get_video_id(url):
     """Extract the video ID from a YouTube URL."""
     video_id = None
@@ -338,6 +345,50 @@ class VideoTranscript(Resource):
         except Exception as e:
             logger.error(f"Error retrieving transcript for video {video_id} in channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving video transcript: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/<string:video_id>/transcript')
+class VideoTranscriptUpdate(Resource):
+    @jwt_required()
+    @ns.expect(transcript_update_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id, video_id):
+        """Update a specific transcript item for a video"""
+        try:
+            data = request.json
+            index = data.get('index')
+            transcript_item = {
+                'start': data.get('start'),
+                'end': data.get('end'),
+                'transcript': data.get('transcript')
+            }
+
+            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+            video_data = redis_client.hget(video_list_key, 'videos')
+            if video_data is None:
+                logger.warning(f"Channel not found: {channel_id}")
+                return {"error": "Channel not found"}, 404
+
+            videos = json.loads(video_data.decode())
+            video_found = False
+            for video in videos:
+                if video["video_id"] == video_id:
+                    video_found = True
+                    if 0 <= index < len(video["transcript"]):
+                        video["transcript"][index] = transcript_item
+                        redis_client.hset(video_list_key, 'videos', json.dumps(videos))
+                        logger.info(f"Updated transcript item {index} for video {video_id} in channel {channel_id}")
+                        return {"message": "Transcript item updated successfully"}, 200
+                    else:
+                        logger.warning(f"Invalid transcript index: {index}")
+                        return {"error": "Invalid transcript index"}, 400
+
+            if not video_found:
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": "Video not found in the channel"}, 404
+
+        except Exception as e:
+            logger.error(f"Error updating transcript: {str(e)}")
+            return {"error": f"Error updating transcript: {str(e)}"}, 500
 
 @ns.route('/export-data')
 class ExportData(Resource):
