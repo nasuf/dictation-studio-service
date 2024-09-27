@@ -42,6 +42,12 @@ email_check_model = auth_ns.model('EmailCheck', {
     'email': fields.String(required=True, description='Email to check')
 })
 
+# Add new model for role update
+role_update_model = auth_ns.model('RoleUpdate', {
+    'email': fields.String(required=True, description='User email'),
+    'role': fields.String(required=True, description='New role for the user')
+})
+
 def hash_password(password):
     """
     Perform server-side encryption on the password.
@@ -324,3 +330,40 @@ class Users(Resource):
         except Exception as e:
             logger.error(f"Error retrieving users: {str(e)}")
             return {"error": "An error occurred while retrieving users"}, 500
+
+@auth_ns.route('/user/role')
+class UserRole(Resource):
+    @jwt_required()
+    @auth_ns.expect(role_update_model)
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
+    def put(self):
+        """Update user role"""
+        try:
+            current_user_email = get_jwt_identity()
+            current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
+            
+            # only allow admin to change user role
+            if current_user_data.get(b'role', b'').decode('utf-8') != 'admin':
+                logger.warning(f"Non-admin user {current_user_email} attempted to change user role")
+                return {"error": "Only administrators can change user roles"}, 403
+
+            data = request.json
+            email = data.get('email')
+            new_role = data.get('role')
+
+            if not email or not new_role:
+                return {"error": "Email and role are required"}, 400
+
+            user_key = f"user:{email}"
+            if not redis_user_client.exists(user_key):
+                logger.warning(f"Attempted to update role for non-existent user: {email}")
+                return {"error": "User not found"}, 404
+
+            redis_user_client.hset(user_key, 'role', new_role)
+
+            logger.info(f"Updated role for user {email} to {new_role}")
+            return {"message": f"Role for user {email} updated to {new_role}"}, 200
+
+        except Exception as e:
+            logger.error(f"Error updating user role: {str(e)}")
+            return {"error": f"An error occurred while updating user role: {str(e)}"}, 500
