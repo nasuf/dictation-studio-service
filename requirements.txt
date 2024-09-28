@@ -9,3 +9,4 @@ google-auth==2.22.0
 google-auth-oauthlib==1.0.0
 google-api-python-client==2.88.0
 flask-jwt-extended==4.4.4
+yt-dlp==2023.9.24

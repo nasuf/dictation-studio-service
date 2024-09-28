@@ -16,8 +16,15 @@ from flask_jwt_extended import JWTManager, jwt_required
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
 from user import user_ns
+import yt_dlp as youtube_dl
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def load_cookies():
+    cookie_file = os.path.join(os.path.dirname(__file__), 'youtube.com_cookies.txt')
+    if os.path.exists(cookie_file):
+        return cookie_file
+    return None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -93,36 +100,70 @@ def get_video_id(url):
 def download_transcript(video_id):
     """Download the transcript and return as a list of dictionaries."""
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        ydl_opts = {
+            'skip_download': True,
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en.*'],
+            'outtmpl': '%(id)s.%(ext)s',
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'nocheckcertificate': True,
+            'quiet': True,
+            'no_color': True,
+            'extractor_args': {'youtube': {'skip': ['dash', 'hls']}},
+            'cookiefile': load_cookies(),
+        }
         
-        available_languages = [t.language_code for t in transcript_list]
-        logger.info(f"Available languages for video {video_id}: {', '.join(available_languages)}")
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            
+            if info is None:
+                raise Exception("Unable to extract video information")
 
-        english_languages = [lang for lang in available_languages if lang.startswith('en')]
+            subtitle_url = None
+            for lang in info.get('subtitles', {}):
+                if lang.startswith('en'):
+                    subtitle_url = info['subtitles'][lang][0]['url']
+                    break
+            
+            if subtitle_url is None:
+                for lang in info.get('automatic_captions', {}):
+                    if lang.startswith('en'):
+                        subtitle_url = info['automatic_captions'][lang][0]['url']
+                        break
 
-        if english_languages:
-            selected_language = english_languages[0]
-        elif available_languages:
-            selected_language = available_languages[0]
-        else:
-            raise Exception("No transcripts available")
+            if subtitle_url is None:
+                raise Exception("No English subtitles available")
 
-        transcript = transcript_list.find_transcript([selected_language])
-        transcript_data = transcript.fetch()
-        
-        formatted_transcript = []
-        for entry in transcript_data:
-            formatted_entry = {
-                "start": round(entry['start'], 2),
-                "end": round(entry['start'] + entry['duration'], 2),
-                "transcript": entry['text']
-            }
-            formatted_transcript.append(formatted_entry)
+            subtitle_content = requests.get(subtitle_url).text
+            
+            # Parse the JSON content
+            subtitle_data = json.loads(subtitle_content)
+            
+            formatted_transcript = []
+            for event in subtitle_data.get('events', []):
+                start = event.get('tStartMs', 0) / 1000  # Convert to seconds
+                duration = event.get('dDurationMs', 0) / 1000  # Convert to seconds
+                end = start + duration
+                text = ' '.join([seg.get('utf8', '') for seg in event.get('segs', [])])
+                
+                formatted_entry = {
+                    "start": round(start, 2),
+                    "end": round(end, 2),
+                    "transcript": text.strip()
+                }
+                formatted_transcript.append(formatted_entry)
 
-        return formatted_transcript
+            return formatted_transcript
     except Exception as e:
         logger.error(f"Error downloading transcript for video {video_id}: {e}")
         return None
+
+def convert_time_to_seconds(time_str):
+    """Convert time string to seconds."""
+    h, m, s = time_str.split(':')
+    return round(int(h) * 3600 + int(m) * 60 + float(s), 2)
 
 def get_video_title(video_id):
     """Get the title of a YouTube video."""
