@@ -97,6 +97,40 @@ def get_video_id(url):
             break
     return video_id
 
+def download_transcript_from_youtube_transcript_api(video_id):
+    """Download the transcript and return as a list of dictionaries."""
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        available_languages = [t.language_code for t in transcript_list]
+        logger.info(f"Available languages for video {video_id}: {', '.join(available_languages)}")
+
+        english_languages = [lang for lang in available_languages if lang.startswith('en')]
+
+        if english_languages:
+            selected_language = english_languages[0]
+        elif available_languages:
+            selected_language = available_languages[0]
+        else:
+            raise Exception("No transcripts available")
+
+        transcript = transcript_list.find_transcript([selected_language])
+        transcript_data = transcript.fetch()
+        
+        formatted_transcript = []
+        for entry in transcript_data:
+            formatted_entry = {
+                "start": round(entry['start'], 2),
+                "end": round(entry['start'] + entry['duration'], 2),
+                "transcript": entry['text']
+            }
+            formatted_transcript.append(formatted_entry)
+
+        return formatted_transcript
+    except Exception as e:
+        logger.error(f"Error downloading transcript for video {video_id}: {e}")
+        return None
+
 def download_transcript(video_id):
     """Download the transcript and return as a list of dictionaries."""
     try:
@@ -192,7 +226,7 @@ class YouTubeTranscript(Resource):
             logger.warning(f"Invalid YouTube URL: {youtube_url}")
             return {"error": "Invalid YouTube URL"}, 400
 
-        transcript = download_transcript(video_id)
+        transcript = download_transcript_from_youtube_transcript_api(video_id)
         if transcript is None:
             logger.error(f"Unable to download transcript for video: {video_id}")
             return {"error": "Unable to download transcript"}, 500
@@ -291,7 +325,7 @@ class YouTubeVideoList(Resource):
                 if any(video['video_id'] == video_id for video in existing_videos):
                     logger.info(f"Using existing data for video: {video_id}")
                 else:
-                    transcript = download_transcript(video_id)
+                    transcript = download_transcript_from_youtube_transcript_api(video_id)
                     if transcript is None:
                         logger.error(f"Unable to download transcript for video: {link}")
                         return {"error": f"Unable to download transcript for video: {link}"}, 500
