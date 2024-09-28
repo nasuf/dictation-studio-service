@@ -17,6 +17,9 @@ from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
 from user import user_ns
 import yt_dlp as youtube_dl
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
+import shutil  # 添加这个导入
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -64,7 +67,8 @@ channel_info_model = api.model('ChannelInfo', {
 
 video_list_model = api.model('VideoList', {
     'channel_id': fields.String(required=True, description='YouTube channel ID'),
-    'video_links': fields.List(fields.String, required=True, description='List of YouTube video links')
+    'video_links': fields.List(fields.String, required=True, description='List of YouTube video links'),
+    'titles': fields.List(fields.String, required=True, description='List of video titles')
 })
 
 transcript_update_model = api.model('TranscriptUpdate', {
@@ -335,66 +339,102 @@ class YouTubeChannel(Resource):
 @ns.route('/video-list')
 class YouTubeVideoList(Resource):
     @jwt_required()
-    @ns.expect(video_list_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
+    @ns.param('data', 'JSON array of video data', type='string', required=True)
+    @ns.param('transcript_files', 'Transcript files', type='file', required=True)
     def post(self):
-        """Save YouTube video list with transcripts and titles for a channel to Redis"""
-        data = request.json
-        channel_id = data.get('channel_id')
-        video_links = data.get('video_links', [])
-        
-        if not channel_id or not video_links:
-            logger.warning("Invalid input: 'channel_id' or 'video_links' is missing")
-            return {"error": "Invalid input. 'channel_id' and 'video_links' are required."}, 400
-
+        """Save multiple YouTube videos with transcripts for multiple channels to Redis"""
         try:
-            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-            if not redis_client.exists(channel_key):
-                logger.warning(f"Channel with id {channel_id} does not exist")
-                return {"error": f"Channel with id {channel_id} does not exist."}, 400
+            data = json.loads(request.form.get('data', '[]'))
+            transcript_files = request.files.getlist('transcript_files')
 
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            existing_videos = redis_client.hget(video_list_key, 'videos')
-            if existing_videos:
-                existing_videos = json.loads(existing_videos.decode())
-            else:
-                existing_videos = []
+            if not data or len(data) != len(transcript_files):
+                logger.warning("Invalid input: data and transcript files mismatch")
+                return {"error": "Invalid input. Data and transcript files must match."}, 400
 
-            new_videos = []
-            for link in video_links:
-                video_id = get_video_id(link)
+            results = []
+            for video_data, transcript_file in zip(data, transcript_files):
+                channel_id = video_data.get('channel_id')
+                video_link = video_data.get('video_link')
+                title = video_data.get('title')
+
+                if not channel_id or not video_link or not title:
+                    logger.warning(f"Invalid input for video: {video_link}")
+                    results.append({"error": f"Invalid input for video: {video_link}. channel_id, video_link, and title are required."})
+                    continue
+
+                channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+                if not redis_client.exists(channel_key):
+                    logger.warning(f"Channel with id {channel_id} does not exist")
+                    results.append({"error": f"Channel with id {channel_id} does not exist."})
+                    continue
+
+                video_id = get_video_id(video_link)
                 if not video_id:
-                    logger.warning(f"Invalid YouTube URL: {link}")
-                    return {"error": f"Invalid YouTube URL: {link}"}, 400
-                
-                if any(video['video_id'] == video_id for video in existing_videos):
-                    logger.info(f"Using existing data for video: {video_id}")
+                    logger.warning(f"Invalid YouTube URL: {video_link}")
+                    results.append({"error": f"Invalid YouTube URL: {video_link}"})
+                    continue
+
+                # Save the uploaded transcript file
+                uploads_dir = 'uploads'
+                filename = secure_filename(f"{video_id}.srt")
+                file_path = os.path.join(uploads_dir, filename)
+                os.makedirs(uploads_dir, exist_ok=True)
+                transcript_file.save(file_path)
+
+                # Parse the SRT file
+                transcript = parse_srt_file(file_path)
+                if transcript is None:
+                    logger.error(f"Unable to parse SRT file for video: {video_link}")
+                    results.append({"error": f"Unable to parse SRT file for video: {video_link}"})
+                    continue
+
+                video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+                existing_videos = redis_client.hget(video_list_key, 'videos')
+                if existing_videos:
+                    existing_videos = json.loads(existing_videos.decode())
                 else:
-                    transcript = parse_srt_file("src/1.srt")
-                    if transcript is None:
-                        logger.error(f"Unable to download transcript for video: {link}")
-                        return {"error": f"Unable to download transcript for video: {link}"}, 500
-                    
-                    title = get_video_title(video_id)
-                    
-                    new_videos.append({
-                        "link": link,
-                        "video_id": video_id,
-                        "title": title,
-                        "transcript": transcript
-                    })
-                    logger.info(f"Added new video: {video_id}")
+                    existing_videos = []
 
-            all_videos = existing_videos + new_videos
+                new_video = {
+                    "link": video_link,
+                    "video_id": video_id,
+                    "title": title,
+                    "transcript": transcript
+                }
 
-            redis_client.hset(video_list_key, 'videos', json.dumps(all_videos))
-            redis_client.hset(video_list_key, 'channel_id', channel_id)
-            
-            logger.info(f"Successfully saved video list for channel {channel_id}")
-            return {"message": f"Video list with transcripts and titles for channel {channel_id} saved successfully"}, 200
+                # Update existing video or add new one
+                updated = False
+                for i, video in enumerate(existing_videos):
+                    if video['video_id'] == video_id:
+                        existing_videos[i] = new_video
+                        updated = True
+                        break
+                if not updated:
+                    existing_videos.append(new_video)
+
+                redis_client.hset(video_list_key, 'videos', json.dumps(existing_videos))
+                redis_client.hset(video_list_key, 'channel_id', channel_id)
+
+                logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
+                results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
+
+            # Clean up uploaded files
+            for filename in os.listdir(uploads_dir):
+                file_path = os.path.join(uploads_dir, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    logger.error(f'Failed to delete {file_path}. Reason: {e}')
+
+            logger.info("Uploads folder cleared successfully")
+            return {"results": results}, 200
         except Exception as e:
             logger.error(f"Error saving video list: {str(e)}")
-            return {"error": f"Error saving video list with transcripts and titles: {str(e)}"}, 500
+            return {"error": f"Error saving video list with transcripts: {str(e)}"}, 500
 
     @jwt_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
@@ -630,6 +670,39 @@ class FullVideoTranscriptUpdate(Resource):
         except Exception as e:
             logger.error(f"Error updating full transcript: {str(e)}")
             return {"error": f"Error updating full transcript: {str(e)}"}, 500
+
+@ns.route('/video-list/<string:channel_id>/<string:video_id>')
+class YouTubeVideoDelete(Resource):
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def delete(self, channel_id, video_id):
+        """Delete a specific video from a channel"""
+        try:
+            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+            videos_data = redis_client.hget(video_list_key, 'videos')
+            
+            if videos_data is None:
+                logger.warning(f"Channel not found: {channel_id}")
+                return {"error": "Channel not found"}, 404
+
+            videos = json.loads(videos_data.decode())
+            
+            # Find and remove the video
+            updated_videos = [video for video in videos if video['video_id'] != video_id]
+            
+            if len(videos) == len(updated_videos):
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": "Video not found in the channel"}, 404
+
+            # Update Redis with the new video list
+            redis_client.hset(video_list_key, 'videos', json.dumps(updated_videos))
+
+            logger.info(f"Successfully deleted video {video_id} from channel {channel_id}")
+            return {"message": f"Video {video_id} deleted successfully from channel {channel_id}"}, 200
+
+        except Exception as e:
+            logger.error(f"Error deleting video {video_id} from channel {channel_id}: {str(e)}")
+            return {"error": f"Error deleting video: {str(e)}"}, 500
 
 # Add user namespace to API
 api.add_namespace(auth_ns, path='/daily-dictation/auth')
