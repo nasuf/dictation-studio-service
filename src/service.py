@@ -67,6 +67,14 @@ transcript_update_model = api.model('TranscriptUpdate', {
     'transcript': fields.String(required=True, description='Updated transcript text')
 })
 
+full_transcript_update_model = api.model('FullTranscriptUpdate', {
+    'transcript': fields.List(fields.Nested(api.model('TranscriptItem', {
+        'start': fields.Float(required=True, description='Start time of the transcript item'),
+        'end': fields.Float(required=True, description='End time of the transcript item'),
+        'transcript': fields.String(required=True, description='Transcript text')
+    })))
+})
+
 def get_video_id(url):
     """Extract the video ID from a YouTube URL."""
     video_id = None
@@ -463,6 +471,45 @@ class ImportData(Resource):
         except Exception as e:
             logger.error(f"Error importing data: {str(e)}")
             return {"error": f"Error importing data: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/<string:video_id>/full-transcript')
+class FullVideoTranscriptUpdate(Resource):
+    @jwt_required()
+    @ns.expect(full_transcript_update_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id, video_id):
+        """Update the entire transcript for a video"""
+        try:
+            data = request.json
+            new_transcript = data.get('transcript')
+
+            if not new_transcript:
+                logger.warning("No transcript data provided")
+                return {"error": "Transcript data is required"}, 400
+
+            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+            video_data = redis_client.hget(video_list_key, 'videos')
+            if video_data is None:
+                logger.warning(f"Channel not found: {channel_id}")
+                return {"error": "Channel not found"}, 404
+
+            videos = json.loads(video_data.decode())
+            video_found = False
+            for video in videos:
+                if video["video_id"] == video_id:
+                    video_found = True
+                    video["transcript"] = new_transcript
+                    redis_client.hset(video_list_key, 'videos', json.dumps(videos))
+                    logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
+                    return {"message": "Full transcript updated successfully"}, 200
+
+            if not video_found:
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": "Video not found in the channel"}, 404
+
+        except Exception as e:
+            logger.error(f"Error updating full transcript: {str(e)}")
+            return {"error": f"Error updating full transcript: {str(e)}"}, 500
 
 # Add user namespace to API
 api.add_namespace(auth_ns, path='/daily-dictation/auth')

@@ -1,6 +1,6 @@
 Flask==2.3.2
 flask-restx==1.1.0
-youtube-transcript-api==0.6.1
+youtube-transcript-api==0.6.2
 flask-cors==3.0.10
 redis==4.5.4
 requests==2.31.0
