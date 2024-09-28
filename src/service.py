@@ -211,6 +211,51 @@ def get_video_title(video_id):
         logger.error(f"Error getting title for video {video_id}: {e}")
         return None
     
+def parse_srt_file(file_path):
+    """
+    Parse SRT format content and return a list of dictionaries.
+    
+    Each dictionary contains:
+    - start: start time in seconds
+    - end: end time in seconds
+    - transcript: the text of the subtitle
+    """
+    with open(file_path, 'r', encoding='utf-8') as file:
+        srt_content = file.read()
+    
+    # Split the content into subtitle blocks
+    subtitle_blocks = re.split(r'\n\n+', srt_content.strip())
+    
+    formatted_transcript = []
+    for block in subtitle_blocks:
+        lines = block.split('\n')
+        if len(lines) >= 3:  # Ensure we have at least index, time, and text
+            # Extract time information
+            time_line = lines[1]
+            start_time, end_time = time_line.split(' --> ')
+            
+            # Convert time to seconds
+            start_seconds = convert_time_to_seconds(start_time)
+            end_seconds = convert_time_to_seconds(end_time)
+            
+            # Join all lines after the time line as the transcript text
+            transcript_text = ' '.join(lines[2:]).replace('\n', ' ').strip()
+            
+            formatted_transcript.append({
+                "start": start_seconds,
+                "end": end_seconds,
+                "transcript": transcript_text
+            })
+    
+    return formatted_transcript
+
+def convert_time_to_seconds(time_str):
+    """Convert SRT time format (HH:MM:SS,mmm) to seconds."""
+    hours, minutes, rest = time_str.split(':')
+    seconds, milliseconds = rest.split(',')
+    total_seconds = int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
+    return round(total_seconds, 2)
+   
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @jwt_required()
@@ -325,7 +370,7 @@ class YouTubeVideoList(Resource):
                 if any(video['video_id'] == video_id for video in existing_videos):
                     logger.info(f"Using existing data for video: {video_id}")
                 else:
-                    transcript = download_transcript_from_youtube_transcript_api(video_id)
+                    transcript = parse_srt_file("src/1.srt")
                     if transcript is None:
                         logger.error(f"Unable to download transcript for video: {link}")
                         return {"error": f"Unable to download transcript for video: {link}"}, 500
