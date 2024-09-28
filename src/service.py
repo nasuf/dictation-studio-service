@@ -558,80 +558,6 @@ class VideoTranscriptUpdate(Resource):
             logger.error(f"Error updating transcript: {str(e)}")
             return {"error": f"Error updating transcript: {str(e)}"}, 500
 
-@ns.route('/export-data')
-class ExportData(Resource):
-    @jwt_required()
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
-    def get(self):
-        """Export all data from Redis to a JSON file"""
-        try:
-            data = {
-                'channels': {},
-                'video_lists': {}
-            }
-
-            for key in redis_client.scan_iter(f"{CHANNEL_PREFIX}*"):
-                channel_id = key.decode().split(':')[-1]
-                data['channels'][channel_id] = {k.decode(): v.decode() for k, v in redis_client.hgetall(key).items()}
-
-            for key in redis_client.scan_iter(f"{VIDEO_PREFIX}*"):
-                channel_id = key.decode().split(':')[-1]
-                data['video_lists'][channel_id] = {k.decode(): json.loads(v.decode()) for k, v in redis_client.hgetall(key).items()}
-
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
-                json.dump(data, temp_file, indent=2)
-                temp_file_path = temp_file.name
-
-            logger.info("Successfully exported all data to JSON file")
-            return send_file(temp_file_path, as_attachment=True, download_name='redis_export.json', mimetype='application/json')
-
-        except Exception as e:
-            logger.error(f"Error exporting data: {str(e)}")
-            return {"error": f"Error exporting data: {str(e)}"}, 500
-        finally:
-            if 'temp_file_path' in locals():
-                os.unlink(temp_file_path)
-
-@ns.route('/import-data')
-class ImportData(Resource):
-    @jwt_required()
-    @ns.expect(api.parser().add_argument('file', location='files', type='file', required=True))
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
-    def post(self):
-        """Import data from a JSON file to Redis"""
-        try:
-            if 'file' not in request.files:
-                logger.warning("No file part in the request")
-                return {"error": "No file part in the request"}, 400
-            
-            file = request.files['file']
-            if file.filename == '':
-                logger.warning("No selected file")
-                return {"error": "No selected file"}, 400
-            
-            if not file.filename.lower().endswith('.json'):
-                logger.warning("Invalid file type")
-                return {"error": "Invalid file type. Please upload a JSON file"}, 400
-
-            data = json.load(file)
-
-            for channel_id, value in data.get('channels', {}).items():
-                redis_client.hmset(f"{CHANNEL_PREFIX}{channel_id}", value)
-
-            for channel_id, value in data.get('video_lists', {}).items():
-                for video_id, video_data in value.items():
-                    redis_client.hset(f"{VIDEO_PREFIX}{channel_id}", video_id, json.dumps(video_data))
-
-            logger.info("Successfully imported data from JSON file")
-            return {"message": "Data imported successfully"}, 200
-
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON format in the uploaded file")
-            return {"error": "Invalid JSON format in the uploaded file"}, 400
-        except Exception as e:
-            logger.error(f"Error importing data: {str(e)}")
-            return {"error": f"Error importing data: {str(e)}"}, 500
-
 @ns.route('/<string:channel_id>/<string:video_id>/full-transcript')
 class FullVideoTranscriptUpdate(Resource):
     @jwt_required()
@@ -703,6 +629,62 @@ class YouTubeVideoDelete(Resource):
         except Exception as e:
             logger.error(f"Error deleting video {video_id} from channel {channel_id}: {str(e)}")
             return {"error": f"Error deleting video: {str(e)}"}, 500
+
+@ns.route('/video-list/<string:channel_id>/<string:video_id>')
+class YouTubeVideoUpdate(Resource):
+    @jwt_required()
+    @ns.expect(api.model('VideoUpdate', {
+        'link': fields.String(required=True, description='Updated YouTube video URL'),
+        'title': fields.String(required=True, description='Updated video title')
+    }))
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id, video_id):
+        """Update a specific video's attributes (except transcript) in a channel"""
+        try:
+            data = request.json
+            new_link = data.get('link')
+            new_title = data.get('title')
+
+            if not new_link or not new_title:
+                logger.warning("Invalid input: link and title are required")
+                return {"error": "Invalid input. Both link and title are required."}, 400
+
+            new_video_id = get_video_id(new_link)
+            if not new_video_id:
+                logger.warning(f"Invalid YouTube URL: {new_link}")
+                return {"error": f"Invalid YouTube URL: {new_link}"}, 400
+
+            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+            videos_data = redis_client.hget(video_list_key, 'videos')
+            
+            if videos_data is None:
+                logger.warning(f"Channel not found: {channel_id}")
+                return {"error": "Channel not found"}, 404
+
+            videos = json.loads(videos_data.decode())
+            
+            video_found = False
+            for video in videos:
+                if video['video_id'] == video_id:
+                    video_found = True
+                    video['link'] = new_link
+                    video['video_id'] = new_video_id
+                    video['title'] = new_title
+                    break
+            
+            if not video_found:
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": "Video not found in the channel"}, 404
+
+            # Update Redis with the modified video list
+            redis_client.hset(video_list_key, 'videos', json.dumps(videos))
+
+            logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
+            return {"message": f"Video {video_id} updated successfully in channel {channel_id}"}, 200
+
+        except Exception as e:
+            logger.error(f"Error updating video {video_id} in channel {channel_id}: {str(e)}")
+            return {"error": f"Error updating video: {str(e)}"}, 500
 
 # Add user namespace to API
 api.add_namespace(auth_ns, path='/daily-dictation/auth')
