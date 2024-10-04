@@ -11,7 +11,7 @@ import redis
 import requests
 from bs4 import BeautifulSoup
 import tempfile
-from config import REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB
+from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX
 from flask_jwt_extended import JWTManager, jwt_required
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
@@ -40,8 +40,6 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
 app.config['JWT_TOKEN_LOCATION'] = ['headers']  # Only allow JWT tokens in headers
 jwt = JWTManager(app)
 
-CHANNEL_PREFIX = "channel:"
-VIDEO_PREFIX = "video:"
 
 api = Api(app, version='1.0', title='Daily Dictation Service API',
           description='API for daily dictation service')
@@ -49,8 +47,11 @@ api = Api(app, version='1.0', title='Daily Dictation Service API',
 ns = api.namespace('service', path='/daily-dictation/service', description='Daily Dictation Service Operations')
 
 # Redis connection
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB)
+redis_resource_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB)
 redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB)
+
+app.config['redis_resource_client'] = redis_resource_client
+app.config['redis_user_client'] = redis_user_client
 
 # Input models for Swagger
 youtube_url_model = api.model('YouTubeURL', {
@@ -313,7 +314,7 @@ class YouTubeChannel(Resource):
                     'name': channel_name,
                     'image_url': channel_image_url
                 }
-                redis_client.hmset(channel_key, channel_info)
+                redis_resource_client.hmset(channel_key, channel_info)
                 logger.info(f"Saved/updated channel: {channel_id}")
             
             logger.info(f"Successfully saved/updated {len(channels)} channel(s)")
@@ -327,8 +328,8 @@ class YouTubeChannel(Resource):
         """Get all YouTube channel information from Redis"""
         try:
             all_channels = []
-            for key in redis_client.scan_iter(f"{CHANNEL_PREFIX}*"):
-                channel_info = redis_client.hgetall(key)
+            for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
+                channel_info = redis_resource_client.hgetall(key)
                 all_channels.append({k.decode(): v.decode() for k, v in channel_info.items()})
             logger.info(f"Retrieved {len(all_channels)} channels from Redis")
             return all_channels, 200
@@ -364,7 +365,7 @@ class YouTubeVideoList(Resource):
                     continue
 
                 channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-                if not redis_client.exists(channel_key):
+                if not redis_resource_client.exists(channel_key):
                     logger.warning(f"Channel with id {channel_id} does not exist")
                     results.append({"error": f"Channel with id {channel_id} does not exist."})
                     continue
@@ -390,7 +391,7 @@ class YouTubeVideoList(Resource):
                     continue
 
                 video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-                existing_videos = redis_client.hget(video_list_key, 'videos')
+                existing_videos = redis_resource_client.hget(video_list_key, 'videos')
                 if existing_videos:
                     existing_videos = json.loads(existing_videos.decode())
                 else:
@@ -413,8 +414,8 @@ class YouTubeVideoList(Resource):
                 if not updated:
                     existing_videos.append(new_video)
 
-                redis_client.hset(video_list_key, 'videos', json.dumps(existing_videos))
-                redis_client.hset(video_list_key, 'channel_id', channel_id)
+                redis_resource_client.hset(video_list_key, 'videos', json.dumps(existing_videos))
+                redis_resource_client.hset(video_list_key, 'channel_id', channel_id)
 
                 logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
@@ -442,8 +443,8 @@ class YouTubeVideoList(Resource):
         """Get all YouTube video lists with transcripts from Redis"""
         try:
             video_lists = []
-            for key in redis_client.scan_iter(f"{VIDEO_PREFIX}*"):
-                video_list_data = redis_client.hgetall(key)
+            for key in redis_resource_client.scan_iter(f"{VIDEO_PREFIX}*"):
+                video_list_data = redis_resource_client.hgetall(key)
                 videos = json.loads(video_list_data[b'videos'].decode())
                 channel_id = video_list_data[b'channel_id'].decode()
                 video_lists.append({
@@ -464,7 +465,7 @@ class YouTubeVideoListByChannel(Resource):
         """Get video IDs and links for a specific channel"""
         try:
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_client.hget(video_list_key, 'videos')
+            video_data = redis_resource_client.hget(video_list_key, 'videos')
             if not video_data:
                 logger.info(f"No videos found for channel: {channel_id}")
                 return {"channel_id": channel_id, "videos": []}, 200
@@ -492,7 +493,7 @@ class VideoTranscript(Resource):
         """Get transcript for a specific video in a channel"""
         try:
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_client.hget(video_list_key, 'videos')
+            video_data = redis_resource_client.hget(video_list_key, 'videos')
             if video_data is None:
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
@@ -531,7 +532,7 @@ class VideoTranscriptUpdate(Resource):
             }
 
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_client.hget(video_list_key, 'videos')
+            video_data = redis_resource_client.hget(video_list_key, 'videos')
             if video_data is None:
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
@@ -543,7 +544,7 @@ class VideoTranscriptUpdate(Resource):
                     video_found = True
                     if 0 <= index < len(video["transcript"]):
                         video["transcript"][index] = transcript_item
-                        redis_client.hset(video_list_key, 'videos', json.dumps(videos))
+                        redis_resource_client.hset(video_list_key, 'videos', json.dumps(videos))
                         logger.info(f"Updated transcript item {index} for video {video_id} in channel {channel_id}")
                         return {"message": "Transcript item updated successfully"}, 200
                     else:
@@ -574,7 +575,7 @@ class FullVideoTranscriptUpdate(Resource):
                 return {"error": "Transcript data is required"}, 400
 
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_client.hget(video_list_key, 'videos')
+            video_data = redis_resource_client.hget(video_list_key, 'videos')
             if video_data is None:
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
@@ -585,7 +586,7 @@ class FullVideoTranscriptUpdate(Resource):
                 if video["video_id"] == video_id:
                     video_found = True
                     video["transcript"] = new_transcript
-                    redis_client.hset(video_list_key, 'videos', json.dumps(videos))
+                    redis_resource_client.hset(video_list_key, 'videos', json.dumps(videos))
                     logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
                     return {"message": "Full transcript updated successfully"}, 200
 
@@ -605,7 +606,7 @@ class YouTubeVideoDelete(Resource):
         """Delete a specific video from a channel"""
         try:
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            videos_data = redis_client.hget(video_list_key, 'videos')
+            videos_data = redis_resource_client.hget(video_list_key, 'videos')
             
             if videos_data is None:
                 logger.warning(f"Channel not found: {channel_id}")
@@ -621,7 +622,7 @@ class YouTubeVideoDelete(Resource):
                 return {"error": "Video not found in the channel"}, 404
 
             # Update Redis with the new video list
-            redis_client.hset(video_list_key, 'videos', json.dumps(updated_videos))
+            redis_resource_client.hset(video_list_key, 'videos', json.dumps(updated_videos))
 
             logger.info(f"Successfully deleted video {video_id} from channel {channel_id}")
             return {"message": f"Video {video_id} deleted successfully from channel {channel_id}"}, 200
@@ -655,7 +656,7 @@ class YouTubeVideoUpdate(Resource):
                 return {"error": f"Invalid YouTube URL: {new_link}"}, 400
 
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            videos_data = redis_client.hget(video_list_key, 'videos')
+            videos_data = redis_resource_client.hget(video_list_key, 'videos')
             
             if videos_data is None:
                 logger.warning(f"Channel not found: {channel_id}")
@@ -677,7 +678,7 @@ class YouTubeVideoUpdate(Resource):
                 return {"error": "Video not found in the channel"}, 404
 
             # Update Redis with the modified video list
-            redis_client.hset(video_list_key, 'videos', json.dumps(videos))
+            redis_resource_client.hset(video_list_key, 'videos', json.dumps(videos))
 
             logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
             return {"message": f"Video {video_id} updated successfully in channel {channel_id}"}, 200

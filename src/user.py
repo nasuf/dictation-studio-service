@@ -1,19 +1,24 @@
 from flask import request
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
-import redis
 import json
 import logging
-from config import REDIS_HOST, REDIS_PORT, REDIS_USER_DB
+from config import CHANNEL_PREFIX, VIDEO_PREFIX
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Redis connection for user data
-redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB)
-
 # Create a namespace for user-related routes
 user_ns = Namespace('user', description='User operations')
+
+# We'll define these functions to get Redis clients
+def get_redis_resource_client():
+    from flask import current_app
+    return current_app.config['redis_resource_client']
+
+def get_redis_user_client():
+    from flask import current_app
+    return current_app.config['redis_user_client']
 
 # Define model for dictation progress
 dictation_progress_model = user_ns.model('DictationProgress', {
@@ -45,6 +50,7 @@ class DictationProgress(Resource):
 
             # Get existing user data
             user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
             if not user_data:
@@ -84,6 +90,7 @@ class DictationProgress(Resource):
                 return {"error": "channelId and videoId are required"}, 400
 
             user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
             if not user_data:
@@ -118,6 +125,7 @@ class ChannelDictationProgress(Resource):
                 return {"error": "channelId is required"}, 400
 
             user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
             if not user_data:
@@ -150,6 +158,7 @@ class ChannelDictationProgress(Resource):
 
             # Get existing user data
             user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
             if not user_data:
@@ -184,6 +193,7 @@ class AllUsers(Resource):
         """Get all users' information"""
         try:
             # Get all user keys
+            redis_user_client = get_redis_user_client()
             user_keys = redis_user_client.keys("user:*")
             users = []
             for key in user_keys:
@@ -197,3 +207,63 @@ class AllUsers(Resource):
         except Exception as e:
             logger.error(f"Error retrieving all users' information: {str(e)}")
             return {"error": "An error occurred while retrieving users' information"}, 500
+
+@user_ns.route('/all-progress')
+class AllDictationProgress(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def get(self):
+        """Get all dictation progress for the user with channel and video details"""
+        try:
+            user_email = get_jwt_identity()
+            user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+
+            all_progress = []
+            for key, value in dictation_progress.items():
+                channel_id, video_id = key.split(':')
+                
+                # Get channel info
+                channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+                redis_resource_client = get_redis_resource_client()
+                channel_info = redis_resource_client.hgetall(channel_key)
+                channel_name = channel_info.get(b'name', b'Unknown Channel').decode('utf-8')
+
+                # Get video info
+                video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+                videos_data = redis_resource_client.hget(video_list_key, 'videos')
+                if videos_data:
+                    videos = json.loads(videos_data.decode())
+                    video_info = next((v for v in videos if v['video_id'] == video_id), None)
+                    if video_info:
+                        video_title = video_info.get('title', 'Unknown Video')
+                        video_link = video_info.get('link', '')
+                    else:
+                        video_title = 'Unknown Video'
+                        video_link = ''
+                else:
+                    video_title = 'Unknown Video'
+                    video_link = ''
+
+                progress_info = {
+                    'channelId': channel_id,
+                    'channelName': channel_name,
+                    'videoId': video_id,
+                    'videoTitle': video_title,
+                    'videoLink': video_link,
+                    'overallCompletion': value['overallCompletion']
+                }
+                all_progress.append(progress_info)
+
+            logger.info(f"Retrieved all dictation progress for user: {user_email}")
+            return {"progress": all_progress}, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving all dictation progress: {str(e)}")
+            return {"error": f"An error occurred while retrieving all dictation progress: {str(e)}"}, 500
