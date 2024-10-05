@@ -1,4 +1,4 @@
-from flask import request
+from flask import request, jsonify
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import json
@@ -26,7 +26,15 @@ dictation_progress_model = user_ns.model('DictationProgress', {
     'videoId': fields.String(required=True, description='Video ID'),
     'userInput': fields.Raw(required=True, description='User input for dictation'),
     'currentTime': fields.Integer(required=True, description='Current timestamp'),
-    'overallCompletion': fields.Integer(required=True, description='Overall completion percentage')
+    'overallCompletion': fields.Integer(required=True, description='Overall completion percentage'),
+    'duration': fields.Integer(required=True, description='Duration in milliseconds')
+})
+
+# Add new model definition
+video_duration_model = user_ns.model('VideoDuration', {
+    'channelId': fields.String(required=True, description='Channel ID'),
+    'videoId': fields.String(required=True, description='Video ID'),
+    'duration': fields.Integer(required=True, description='Duration in milliseconds')
 })
 
 @user_ns.route('/progress')
@@ -35,20 +43,15 @@ class DictationProgress(Resource):
     @user_ns.expect(dictation_progress_model)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
-        """Update user's dictation progress"""
+        """Update user's dictation progress and video duration"""
         try:
-            # Get user email from JWT token
             user_email = get_jwt_identity()
-
-            # Get progress data from request
             progress_data = request.json
 
-            # Validate input data
-            required_fields = ['channelId', 'videoId', 'userInput', 'currentTime', 'overallCompletion']
+            required_fields = ['channelId', 'videoId', 'userInput', 'currentTime', 'overallCompletion', 'duration']
             if not all(field in progress_data for field in required_fields):
                 return {"error": "Missing required fields"}, 400
 
-            # Get existing user data
             user_key = f"user:{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
@@ -56,26 +59,51 @@ class DictationProgress(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            # Get existing dictation progress or initialize new
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
-
             # Update dictation progress
+            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
             video_key = f"{progress_data['channelId']}:{progress_data['videoId']}"
             dictation_progress[video_key] = {
                 'userInput': progress_data['userInput'],
                 'currentTime': progress_data['currentTime'],
                 'overallCompletion': progress_data['overallCompletion']
             }
-
-            # Save updated dictation progress
             redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
 
-            logger.info(f"Updated dictation progress for user: {user_email}, channel: {progress_data['channelId']}, video: {video_key}")
-            return {"message": "Dictation progress updated successfully"}, 200
+            # Update structured duration data
+            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}}').decode('utf-8'))
+
+            channel_id = progress_data['channelId']
+            video_id = progress_data['videoId']
+            new_duration = progress_data['duration']
+
+            if channel_id not in duration_data['channels']:
+                duration_data['channels'][channel_id] = {"duration": 0, "videos": {}}
+
+            channel_data = duration_data['channels'][channel_id]
+
+            if video_id in channel_data['videos']:
+                old_duration = channel_data['videos'][video_id]
+                duration_diff = new_duration - old_duration
+            else:
+                duration_diff = new_duration
+
+            channel_data['videos'][video_id] = new_duration
+            channel_data['duration'] += duration_diff
+            duration_data['duration'] += duration_diff
+
+            redis_user_client.hset(user_key, 'duration_data', json.dumps(duration_data))
+
+            logger.info(f"Updated progress and duration for user: {user_email}, channel: {channel_id}, video: {video_id}")
+            return {
+                "message": "Dictation progress and video duration updated successfully",
+                "videoDuration": new_duration,
+                "channelTotalDuration": channel_data['duration'],
+                "totalDuration": duration_data['duration']
+            }, 200
 
         except Exception as e:
-            logger.error(f"Error updating dictation progress: {str(e)}")
-            return {"error": "An error occurred while updating dictation progress"}, 500
+            logger.error(f"Error updating progress and duration: {str(e)}")
+            return {"error": f"An error occurred while updating progress and duration: {str(e)}"}, 500
 
     @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID', 'videoId': 'Video ID'}, responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
@@ -267,3 +295,28 @@ class AllDictationProgress(Resource):
         except Exception as e:
             logger.error(f"Error retrieving all dictation progress: {str(e)}")
             return {"error": f"An error occurred while retrieving all dictation progress: {str(e)}"}, 500
+
+@user_ns.route('/duration')
+class UserDuration(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def get(self):
+        """Get user's structured duration data"""
+        try:
+            user_email = get_jwt_identity()
+            redis_user_client = get_redis_user_client()
+
+            user_key = f"user:{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}}').decode('utf-8'))
+
+            logger.info(f"Retrieved structured duration data for user: {user_email}")
+            return duration_data, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving structured duration data: {str(e)}")
+            return {"error": f"An error occurred while retrieving structured duration data: {str(e)}"}, 500
