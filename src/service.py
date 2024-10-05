@@ -41,10 +41,10 @@ app.config['JWT_TOKEN_LOCATION'] = ['headers']  # Only allow JWT tokens in heade
 jwt = JWTManager(app)
 
 
-api = Api(app, version='1.0', title='Daily Dictation Service API',
-          description='API for daily dictation service')
+api = Api(app, version='1.0', title='Dictation Studio API',
+          description='API for Dictation Studio')
 
-ns = api.namespace('service', path='/daily-dictation/service', description='Daily Dictation Service Operations')
+ns = api.namespace('service', path='/dictation-studio/service', description='Dictation Studio Service Operations')
 
 # Redis connection
 redis_resource_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB)
@@ -688,8 +688,8 @@ class YouTubeVideoUpdate(Resource):
             return {"error": f"Error updating video: {str(e)}"}, 500
 
 # Add user namespace to API
-api.add_namespace(auth_ns, path='/daily-dictation/auth')
-api.add_namespace(user_ns, path='/daily-dictation/user')
+api.add_namespace(auth_ns, path='/dictation-studio/auth')
+api.add_namespace(user_ns, path='/dictation-studio/user')
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
