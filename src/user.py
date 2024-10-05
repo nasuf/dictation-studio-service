@@ -301,7 +301,7 @@ class UserDuration(Resource):
     @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
-        """Get user's structured duration data"""
+        """Get user's total duration"""
         try:
             user_email = get_jwt_identity()
             redis_user_client = get_redis_user_client()
@@ -314,9 +314,11 @@ class UserDuration(Resource):
 
             duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}}').decode('utf-8'))
 
-            logger.info(f"Retrieved structured duration data for user: {user_email}")
-            return duration_data, 200
+            total_duration = duration_data.get('duration', 0)
+
+            logger.info(f"Retrieved total duration for user: {user_email}")
+            return {"totalDuration": total_duration}, 200
 
         except Exception as e:
-            logger.error(f"Error retrieving structured duration data: {str(e)}")
-            return {"error": f"An error occurred while retrieving structured duration data: {str(e)}"}, 500
+            logger.error(f"Error retrieving total duration: {str(e)}")
+            return {"error": f"An error occurred while retrieving total duration: {str(e)}"}, 500
