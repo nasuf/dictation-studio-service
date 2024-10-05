@@ -1,11 +1,12 @@
 from flask import jsonify, request
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies
+from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import redis
 import logging
-from config import REDIS_HOST, REDIS_PORT, REDIS_USER_DB
+from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB
+from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
 
@@ -129,7 +130,7 @@ class GoogleTokenVerification(Resource):
 
 @auth_ns.route('/check-login')
 class CheckLogin(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Check if the user is logged in, return user info, and refresh the JWT token"""
@@ -144,13 +145,9 @@ class CheckLogin(Resource):
             # Convert byte strings to regular strings
             user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
 
-            # Create a new JWT token
-            new_token = create_access_token(identity=current_user_email)
-
             response_data = {
                 "message": "User is logged in",
                 "user": user_info,
-                "jwt_token": new_token
             }
 
             logger.info(f"Successfully checked login and refreshed token for user: {current_user_email}")
@@ -162,17 +159,18 @@ class CheckLogin(Resource):
 
 @auth_ns.route('/logout')
 class Logout(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
         """Logout the current user"""
         try:
-            current_user_email = get_jwt_identity()
+            jti = get_jwt()['jti']
+            add_token_to_blacklist(jti)
             
             response = jsonify({"message": "Successfully logged out"})
             unset_jwt_cookies(response)
             
-            logger.info(f"User {current_user_email} successfully logged out")
+            logger.info(f"User successfully logged out")
             return response
 
         except Exception as e:
@@ -311,7 +309,7 @@ class CheckEmail(Resource):
         
 @auth_ns.route('/users')
 class Users(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Get all users"""
@@ -333,7 +331,7 @@ class Users(Resource):
 
 @auth_ns.route('/user/role')
 class UserRole(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.expect(role_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):

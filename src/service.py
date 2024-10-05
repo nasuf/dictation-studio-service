@@ -20,6 +20,7 @@ import yt_dlp as youtube_dl
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 import shutil  # 添加这个导入
+from jwt_utils import jwt_required_and_refresh
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -263,7 +264,7 @@ def convert_time_to_seconds(time_str):
    
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.expect(youtube_url_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
@@ -286,7 +287,7 @@ class YouTubeTranscript(Resource):
 
 @ns.route('/channel')
 class YouTubeChannel(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.expect(channel_info_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
@@ -339,7 +340,7 @@ class YouTubeChannel(Resource):
 
 @ns.route('/video-list')
 class YouTubeVideoList(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     @ns.param('data', 'JSON array of video data', type='string', required=True)
     @ns.param('transcript_files', 'Transcript files', type='file', required=True)
@@ -437,7 +438,7 @@ class YouTubeVideoList(Resource):
             logger.error(f"Error saving video list: {str(e)}")
             return {"error": f"Error saving video list with transcripts: {str(e)}"}, 500
 
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self):
         """Get all YouTube video lists with transcripts from Redis"""
@@ -487,7 +488,7 @@ class YouTubeVideoListByChannel(Resource):
 
 @ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
 class VideoTranscript(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self, channel_id, video_id):
         """Get transcript for a specific video in a channel"""
@@ -517,7 +518,7 @@ class VideoTranscript(Resource):
 
 @ns.route('/<string:channel_id>/<string:video_id>/transcript')
 class VideoTranscriptUpdate(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.expect(transcript_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
@@ -561,7 +562,7 @@ class VideoTranscriptUpdate(Resource):
 
 @ns.route('/<string:channel_id>/<string:video_id>/full-transcript')
 class FullVideoTranscriptUpdate(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.expect(full_transcript_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
@@ -600,7 +601,7 @@ class FullVideoTranscriptUpdate(Resource):
 
 @ns.route('/video-list/<string:channel_id>/<string:video_id>')
 class YouTubeVideoDelete(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def delete(self, channel_id, video_id):
         """Delete a specific video from a channel"""
@@ -633,7 +634,7 @@ class YouTubeVideoDelete(Resource):
 
 @ns.route('/video-list/<string:channel_id>/<string:video_id>')
 class YouTubeVideoUpdate(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @ns.expect(api.model('VideoUpdate', {
         'link': fields.String(required=True, description='Updated YouTube video URL'),
         'title': fields.String(required=True, description='Updated video title')
