@@ -1,6 +1,6 @@
 from flask import jsonify, request
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
+from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, jwt_required, unset_jwt_cookies
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import redis
@@ -9,6 +9,7 @@ from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_
 from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
+import json
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -53,15 +54,15 @@ def hash_password(password):
     """
     Perform server-side encryption on the password.
     """
-    salt = os.urandom(32)  # 生成一个32字节的随机盐
+    salt = os.urandom(32)
     key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
-    return salt + key  # 将盐和密钥连接起来存储
+    return salt + key
 
 def verify_password(stored_password, provided_password):
     """
     Verify the provided password against the stored password.
     """
-    salt = stored_password[:32]  # 盐是前32字节
+    salt = stored_password[:32]
     stored_key = stored_password[32:]
     new_key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
     return new_key == stored_key
@@ -128,7 +129,7 @@ class GoogleTokenVerification(Resource):
             logger.warning(f"Invalid Google token: {str(e)}")
             return {"error": "Invalid token"}, 400
 
-@auth_ns.route('/check-login')
+@auth_ns.route('/refresh-login-status')
 class CheckLogin(Resource):
     @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
@@ -142,13 +143,26 @@ class CheckLogin(Resource):
                 logger.warning(f"User data not found for email: {current_user_email}")
                 return {"error": "User not found"}, 401
 
-            # Convert byte strings to regular strings
-            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+            # Convert byte strings to regular strings and parse JSON fields
+            user_info = {}
+            for k, v in user_data.items():
+                if k != b'password' and k != b'dictation_progress':
+                    key = k.decode('utf-8')
+                    value = v.decode('utf-8')
+                    try:
+                        user_info[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        user_info[key] = value
 
             response_data = {
                 "message": "User is logged in",
                 "user": user_info,
             }
+
+            # Get the new token from the decorator
+            new_token = getattr(self, 'new_token', None)
+            if new_token:
+                response_data['jwt_token'] = new_token
 
             logger.info(f"Successfully checked login and refreshed token for user: {current_user_email}")
             return response_data, 200
@@ -159,7 +173,7 @@ class CheckLogin(Resource):
 
 @auth_ns.route('/logout')
 class Logout(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
         """Logout the current user"""
@@ -309,7 +323,7 @@ class CheckEmail(Resource):
         
 @auth_ns.route('/users')
 class Users(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Get all users"""
@@ -331,7 +345,7 @@ class Users(Resource):
 
 @auth_ns.route('/user/role')
 class UserRole(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.expect(role_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):

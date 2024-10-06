@@ -8,6 +8,7 @@ REDIS_PORT = 6379
 # Redis Configuration for User Data
 REDIS_USER_DB = 1 
 REDIS_RESOURCE_DB = 0
+REDIS_BLACKLIST_DB = 2
 
 CHANNEL_PREFIX = "channel:"
 VIDEO_PREFIX = "video:"

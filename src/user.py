@@ -38,9 +38,18 @@ video_duration_model = user_ns.model('VideoDuration', {
     'duration': fields.Integer(required=True, description='Duration in milliseconds')
 })
 
+# Add new model definition for user configuration
+user_config_model = user_ns.model('UserConfig', {
+    'playback_speed': fields.Float(description='Playback speed'),
+    'auto_repeat': fields.Boolean(description='Auto-repeat setting'),
+    'language_preference': fields.String(description='Language preference'),
+    'theme_preference': fields.String(description='Theme preference'),
+    'shortcuts': fields.Raw(description='Custom shortcuts')
+})
+
 @user_ns.route('/progress')
 class DictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.expect(dictation_progress_model)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
@@ -106,7 +115,7 @@ class DictationProgress(Resource):
             logger.error(f"Error updating progress and duration: {str(e)}")
             return {"error": f"An error occurred while updating progress and duration: {str(e)}"}, 500
 
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID', 'videoId': 'Video ID'}, responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's dictation progress for a specific video"""
@@ -142,7 +151,7 @@ class DictationProgress(Resource):
 
 @user_ns.route('/progress/channel')
 class ChannelDictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID'}, responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's dictation progress for all videos in a specific channel"""
@@ -177,7 +186,7 @@ class ChannelDictationProgress(Resource):
 
 @user_ns.route('/progress/<string:channel_id>')
 class ChannelDictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self, channel_id):
         """Get all dictation progress for a specific channel"""
@@ -216,7 +225,7 @@ class ChannelDictationProgress(Resource):
 
 @user_ns.route('/all')
 class AllUsers(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Get all users' information"""
@@ -239,7 +248,7 @@ class AllUsers(Resource):
 
 @user_ns.route('/all-progress')
 class AllDictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get all dictation progress for the user with channel and video details"""
@@ -299,7 +308,7 @@ class AllDictationProgress(Resource):
 
 @user_ns.route('/duration')
 class UserDuration(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's total duration"""
@@ -323,3 +332,88 @@ class UserDuration(Resource):
         except Exception as e:
             logger.error(f"Error retrieving total duration: {str(e)}")
             return {"error": f"An error occurred while retrieving total duration: {str(e)}"}, 500
+
+@user_ns.route('/config')
+class UserConfig(Resource):
+    @jwt_required()
+    @user_ns.expect(user_config_model)
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def post(self):
+        """Update user's configuration"""
+        try:
+            user_email = get_jwt_identity()
+            config_data = request.json
+
+            user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Helper function to update nested dictionaries
+            def update_nested_dict(d, u):
+                for k, v in u.items():
+                    if isinstance(v, dict):
+                        d[k] = update_nested_dict(d.get(k, {}), v)
+                    else:
+                        d[k] = v
+                return d
+
+            # Update user data with new values
+            for key, value in config_data.items():
+                if isinstance(value, dict):
+                    existing_value = user_data.get(key.encode(), b'{}').decode('utf-8')
+                    try:
+                        existing_dict = json.loads(existing_value)
+                    except json.JSONDecodeError:
+                        existing_dict = {}
+                    updated_value = update_nested_dict(existing_dict, value)
+                    redis_user_client.hset(user_key, key, json.dumps(updated_value))
+                else:
+                    redis_user_client.hset(user_key, key, json.dumps(value))
+
+            logger.info(f"Updated configuration for user: {user_email}")
+            
+            # Fetch updated user data
+            updated_user_data = redis_user_client.hgetall(user_key)
+            updated_config = {}
+            for k, v in updated_user_data.items():
+                if k != b'password':
+                    try:
+                        updated_config[k.decode('utf-8')] = json.loads(v.decode('utf-8'))
+                    except json.JSONDecodeError:
+                        updated_config[k.decode('utf-8')] = v.decode('utf-8')
+            
+            return {"message": "User configuration updated successfully", "config": updated_config}, 200
+
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON Decode Error: {str(e)}")
+            return {"error": f"Invalid JSON format in configuration: {str(e)}"}, 400
+        except Exception as e:
+            logger.error(f"Error updating user configuration: {str(e)}")
+            return {"error": f"An error occurred while updating user configuration: {str(e)}"}, 500
+
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def get(self):
+        """Get user's configuration"""
+        try:
+            user_email = get_jwt_identity()
+
+            user_key = f"user:{user_email}"
+            redis_user_client = get_redis_user_client()
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Convert all values to JSON, except for the password
+            config = {k.decode('utf-8'): json.loads(v.decode('utf-8')) for k, v in user_data.items() if k != b'password'}
+
+            logger.info(f"Retrieved configuration for user: {user_email}")
+            return {"config": config}, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving user configuration: {str(e)}")
+            return {"error": f"An error occurred while retrieving user configuration: {str(e)}"}, 500
