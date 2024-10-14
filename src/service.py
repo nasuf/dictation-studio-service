@@ -304,7 +304,7 @@ class YouTubeChannel(Resource):
                 channel_name = channel.get('name')
                 channel_id = channel.get('id')
                 channel_image_url = channel.get('image_url')
-                channel_visibility = channel.get('visibility', 'open')  # Default to 'open' if not provided
+                channel_visibility = channel.get('visibility', 'public')  # Default to 'public' if not provided
                 
                 if not channel_name or not channel_image_url or not channel_id:
                     logger.warning(f"Invalid input for channel {channel_id}")
