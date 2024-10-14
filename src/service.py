@@ -12,7 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 import tempfile
 from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX
-from flask_jwt_extended import JWTManager, jwt_required
+from flask_jwt_extended import JWTManager, get_jwt_identity, jwt_required
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
 from user import user_ns
@@ -304,6 +304,7 @@ class YouTubeChannel(Resource):
                 channel_name = channel.get('name')
                 channel_id = channel.get('id')
                 channel_image_url = channel.get('image_url')
+                channel_visibility = channel.get('visibility', 'open')  # Default to 'open' if not provided
                 
                 if not channel_name or not channel_image_url or not channel_id:
                     logger.warning(f"Invalid input for channel {channel_id}")
@@ -313,7 +314,8 @@ class YouTubeChannel(Resource):
                 channel_info = {
                     'id': channel_id,
                     'name': channel_name,
-                    'image_url': channel_image_url
+                    'image_url': channel_image_url,
+                    'visibility': channel_visibility
                 }
                 redis_resource_client.hmset(channel_key, channel_info)
                 logger.info(f"Saved/updated channel: {channel_id}")
@@ -331,9 +333,70 @@ class YouTubeChannel(Resource):
             all_channels = []
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
                 channel_info = redis_resource_client.hgetall(key)
-                all_channels.append({k.decode(): v.decode() for k, v in channel_info.items()})
+                channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
+                all_channels.append(channel_data)
+            
             logger.info(f"Retrieved {len(all_channels)} channels from Redis")
             return all_channels, 200
+        except Exception as e:
+            logger.error(f"Error retrieving channel information: {str(e)}")
+            return {"error": f"Error retrieving channel information: {str(e)}"}, 500
+
+@ns.route('/channel/<string:channel_id>')
+class YouTubeChannelOperations(Resource):
+    @jwt_required()
+    @ns.expect(api.model('ChannelUpdate', {
+        'name': fields.String(required=False, description='Updated channel name'),
+        'image_url': fields.String(required=False, description='Updated channel image URL'),
+        'visibility': fields.String(required=False, description='Channel visibility (open, hidden, or user:user_id)')
+    }))
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id):
+        """Update specific fields of a YouTube channel"""
+        try:
+            data = request.json
+            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+            
+            if not redis_resource_client.exists(channel_key):
+                logger.warning(f"Channel not found: {channel_id}")
+                return {"error": "Channel not found"}, 404
+            
+            channel_info = redis_resource_client.hgetall(channel_key)
+            
+            # Update fields if provided
+            if 'name' in data:
+                channel_info[b'name'] = data['name'].encode()
+            if 'image_url' in data:
+                channel_info[b'image_url'] = data['image_url'].encode()
+            if 'visibility' in data:
+                channel_info[b'visibility'] = data['visibility'].encode()
+            
+            # Save updated channel info
+            redis_resource_client.hmset(channel_key, channel_info)
+            
+            logger.info(f"Successfully updated channel: {channel_id}")
+            return {"message": f"Channel {channel_id} updated successfully"}, 200
+        
+        except Exception as e:
+            logger.error(f"Error updating channel {channel_id}: {str(e)}")
+            return {"error": f"Error updating channel: {str(e)}"}, 500
+
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 404: 'Not Found', 500: 'Server Error'})
+    def get(self, channel_id):
+        """Get a specific YouTube channel information from Redis"""
+        try:
+            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+            
+            if not redis_resource_client.exists(channel_key):
+                logger.warning(f"Channel not found: {channel_id}")
+                return {"error": "Channel not found"}, 404
+            
+            channel_info = redis_resource_client.hgetall(channel_key)
+            channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
+            
+            logger.info(f"Retrieved channel information for: {channel_id}")
+            return channel_data, 200
+        
         except Exception as e:
             logger.error(f"Error retrieving channel information: {str(e)}")
             return {"error": f"Error retrieving channel information: {str(e)}"}, 500
