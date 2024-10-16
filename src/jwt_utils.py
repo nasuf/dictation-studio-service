@@ -1,9 +1,10 @@
 from functools import wraps
 import logging
-from flask import jsonify, request
+from flask import jsonify, request, make_response
 from flask_jwt_extended import verify_jwt_in_request, create_access_token, get_jwt_identity, get_jwt
 import redis
-from config import REDIS_HOST, REDIS_PORT, JWT_ACCESS_TOKEN_EXPIRES, REDIS_BLACKLIST_DB
+from config import REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB
+from datetime import datetime
 
 redis_blacklist_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_BLACKLIST_DB)
 logging.basicConfig(level=logging.INFO)
@@ -14,29 +15,33 @@ def jwt_required_and_refresh():
         @wraps(fn)
         def wrapper(*args, **kwargs):
             verify_jwt_in_request()
-            jti = get_jwt()['jti']
+            token = get_jwt()
+            jti = token['jti']
+            
             if redis_blacklist_client.get(jti):
                 return {"msg": "Token has been revoked"}, 401
             
-            # Create a new token
-            current_user = get_jwt_identity()
-            new_token = create_access_token(identity=current_user)
+            exp_timestamp = token['exp']
+            current_timestamp = datetime.now().timestamp()
+            time_left = exp_timestamp - current_timestamp
             
-            # Set the new token as an attribute of the class instance
-            self = args[0]
-            setattr(self, 'new_token', new_token)
+            new_token = None
+            if time_left < 300: # auto refresh token
+                current_user = get_jwt_identity()
+                new_token = create_access_token(identity=current_user)
+                logger.info(f"Token refreshed for user: {current_user}")
             
             result = fn(*args, **kwargs)
             
-            # If the result is a tuple (data, status_code), add the new token to the data
-            if isinstance(result, tuple) and len(result) == 2:
-                data, status_code = result
-                if isinstance(data, dict):
-                    data['jwt_token'] = new_token
-                    return data, status_code
+            if isinstance(result, tuple):
+                response = make_response(result[0], result[1])
+            else:
+                response = make_response(result)
             
-            # If it's not a tuple, assume it's just data and return it with 200 status
-            return result, 200
+            if new_token:
+                response.headers['x-ds-token'] = new_token
+            
+            return response
 
         return wrapper
     return decorator

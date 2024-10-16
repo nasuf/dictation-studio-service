@@ -10,6 +10,7 @@ from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
 import json
+from datetime import timedelta
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -89,7 +90,10 @@ class GoogleTokenVerification(Resource):
             user_exists = redis_user_client.exists(f"user:{email}")
 
             # Create a JWT token
-            jwt_token = create_access_token(identity=email)
+            jwt_token = create_access_token(
+                identity=email,
+                expires_delta=JWT_ACCESS_TOKEN_EXPIRES
+            )
 
             if user_exists:
                 # Update user information in Redis, preserving the existing role
@@ -173,7 +177,7 @@ class CheckLogin(Resource):
 
 @auth_ns.route('/logout')
 class Logout(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
         """Logout the current user"""
@@ -225,7 +229,10 @@ class Register(Resource):
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
             # Create JWT token
-            jwt_token = create_access_token(identity=email)
+            jwt_token = create_access_token(
+                identity=email,
+                expires_delta=JWT_ACCESS_TOKEN_EXPIRES
+            )
 
             # Prepare user info to return (excluding password)
             user_info = {k: v for k, v in user_data.items() if k != 'password'}
@@ -278,7 +285,10 @@ class Login(Resource):
 
             # User authenticated, create JWT token
             email = user_data.get(b'email').decode('utf-8')
-            jwt_token = create_access_token(identity=email)
+            jwt_token = create_access_token(
+                identity=email,
+                expires_delta=JWT_ACCESS_TOKEN_EXPIRES
+            )
 
             # Prepare user info
             user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
@@ -323,7 +333,7 @@ class CheckEmail(Resource):
         
 @auth_ns.route('/users')
 class Users(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Get all users"""
@@ -345,7 +355,7 @@ class Users(Resource):
 
 @auth_ns.route('/user/role')
 class UserRole(Resource):
-    @jwt_required()
+    @jwt_required_and_refresh()
     @auth_ns.expect(role_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):
