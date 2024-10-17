@@ -1,6 +1,6 @@
-from flask import request, jsonify
+from flask import request
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import get_jwt_identity
 import json
 import logging
 from config import CHANNEL_PREFIX, VIDEO_PREFIX

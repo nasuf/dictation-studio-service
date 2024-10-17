@@ -3,21 +3,19 @@ import os
 import json
 import re
 import logging
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
 import redis
 import requests
 from bs4 import BeautifulSoup
-import tempfile
 from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX
-from flask_jwt_extended import JWTManager, get_jwt_identity, jwt_required
+from flask_jwt_extended import JWTManager
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
 from user import user_ns
 import yt_dlp as youtube_dl
-from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 import shutil
 from jwt_utils import jwt_required_and_refresh

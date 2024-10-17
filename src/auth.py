@@ -1,6 +1,6 @@
-from flask import jsonify, request
+from flask import jsonify, request, make_response
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, jwt_required, unset_jwt_cookies
+from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import redis
@@ -123,18 +123,20 @@ class GoogleTokenVerification(Resource):
             stored_user_data = redis_user_client.hgetall(f"user:{email}")
             user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in stored_user_data.items() if k != b'password'}
 
-            return {
+            response_data = {
                 "message": "Token verified successfully",
-                "user": user_info,
-                "jwt_token": jwt_token
-            }, 200
+                "user": user_info
+            }
+            response = make_response(jsonify(response_data), 200)
+            response.headers['x-ds-token'] = jwt_token
+            return response
 
         except Exception as e:
             logger.warning(f"Invalid Google token: {str(e)}")
             return {"error": "Invalid token"}, 400
 
-@auth_ns.route('/refresh-login-status')
-class CheckLogin(Resource):
+@auth_ns.route('/userinfo')
+class UserInfo(Resource):
     @jwt_required_and_refresh()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
@@ -163,17 +165,12 @@ class CheckLogin(Resource):
                 "user": user_info,
             }
 
-            # Get the new token from the decorator
-            new_token = getattr(self, 'new_token', None)
-            if new_token:
-                response_data['jwt_token'] = new_token
-
-            logger.info(f"Successfully checked login and refreshed token for user: {current_user_email}")
+            logger.info(f"User info retrieved: {current_user_email}")
             return response_data, 200
 
         except Exception as e:
-            logger.error(f"Error in check-login: {str(e)}")
-            return {"error": "An error occurred while checking login"}, 500
+            logger.error(f"Error in userinfo: {str(e)}")
+            return {"error": "An error occurred while retrieving user info"}, 500
 
 @auth_ns.route('/logout')
 class Logout(Resource):
@@ -238,11 +235,13 @@ class Register(Resource):
             user_info = {k: v for k, v in user_data.items() if k != 'password'}
 
             logger.info(f"User registered successfully: {email}")
-            return {
+            response_data = {
                 "message": "User registered successfully",
-                "user": user_info,
-                "jwt_token": jwt_token
-            }, 200
+                "user": user_info
+            }
+            response = make_response(jsonify(response_data), 200)
+            response.headers['x-ds-token'] = jwt_token
+            return response
 
         except Exception as e:
             logger.error(f"Error during registration: {str(e)}")
@@ -294,11 +293,13 @@ class Login(Resource):
             user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
 
             logger.info(f"User logged in successfully: {email}")
-            return {
+            response_data = {
                 "message": "Login successful",
-                "user": user_info,
-                "jwt_token": jwt_token
-            }, 200
+                "user": user_info
+            }
+            response = make_response(jsonify(response_data), 200)
+            response.headers['x-ds-token'] = jwt_token
+            return response
 
         except Exception as e:
             logger.error(f"Error during login: {str(e)}")
