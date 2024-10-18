@@ -439,11 +439,18 @@ class YouTubeVideoList(Resource):
                     continue
 
                 # Save the uploaded transcript file
-                uploads_dir = 'uploads'
+                uploads_dir = os.path.join(os.getcwd(), 'uploads')
                 filename = secure_filename(f"{video_id}.srt")
                 file_path = os.path.join(uploads_dir, filename)
-                os.makedirs(uploads_dir, exist_ok=True)
-                transcript_file.save(file_path)
+                
+                try:
+                    os.makedirs(uploads_dir, exist_ok=True)
+                    transcript_file.save(file_path)
+                    logger.info(f"File saved successfully: {file_path}")
+                except Exception as e:
+                    logger.error(f"Error saving file {filename}: {str(e)}")
+                    results.append({"error": f"Error saving file for video {video_id}: {str(e)}"})
+                    continue
 
                 # Parse the SRT file
                 transcript = parse_srt_file(file_path)
@@ -483,17 +490,17 @@ class YouTubeVideoList(Resource):
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
 
             # Clean up uploaded files
-            for filename in os.listdir(uploads_dir):
-                file_path = os.path.join(uploads_dir, filename)
-                try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-                except Exception as e:
-                    logger.error(f'Failed to delete {file_path}. Reason: {e}')
+            # for filename in os.listdir(uploads_dir):
+            #     file_path = os.path.join(uploads_dir, filename)
+            #     try:
+            #         if os.path.isfile(file_path) or os.path.islink(file_path):
+            #             os.unlink(file_path)
+            #         elif os.path.isdir(file_path):
+            #             shutil.rmtree(file_path)
+            #     except Exception as e:
+            #         logger.error(f'Failed to delete {file_path}. Reason: {e}')
 
-            logger.info("Uploads folder cleared successfully")
+            # logger.info("Uploads folder cleared successfully")
             return {"results": results}, 200
         except Exception as e:
             logger.error(f"Error saving video list: {str(e)}")
@@ -748,6 +755,66 @@ class YouTubeVideoUpdate(Resource):
         except Exception as e:
             logger.error(f"Error updating video {video_id} in channel {channel_id}: {str(e)}")
             return {"error": f"Error updating video: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/<string:video_id>/restore-transcript')
+class RestoreVideoTranscript(Resource):
+    @jwt_required_and_refresh()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def post(self, channel_id, video_id):
+        """Restore transcript for a specific video from SRT file and update Redis"""
+        try:
+            # Construct the file path
+            uploads_dir = os.path.join(os.getcwd(), 'uploads')
+            filename = secure_filename(f"{video_id}.srt")
+            file_path = os.path.join(uploads_dir, filename)
+
+            # Check if the file exists
+            if not os.path.exists(file_path):
+                logger.warning(f"SRT file not found for video {video_id}")
+                return {"error": f"SRT file not found for video {video_id}"}, 404
+
+            # Parse the SRT file
+            transcript = parse_srt_file(file_path)
+            if transcript is None:
+                logger.error(f"Unable to parse SRT file for video: {video_id}")
+                return {"error": f"Unable to parse SRT file for video: {video_id}"}, 500
+
+            # Update Redis
+            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
+            existing_videos = redis_resource_client.hget(video_list_key, 'videos')
+            if existing_videos:
+                existing_videos = json.loads(existing_videos.decode())
+            else:
+                existing_videos = []
+
+            # Find and update the video entry
+            updated = False
+            for video in existing_videos:
+                if video['video_id'] == video_id:
+                    video['transcript'] = transcript
+                    updated = True
+                    break
+
+            if not updated:
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": f"Video {video_id} not found in channel {channel_id}"}, 404
+
+            # Save updated video list back to Redis
+            redis_resource_client.hset(video_list_key, 'videos', json.dumps(existing_videos))
+
+            logger.info(f"Successfully restored transcript for video {video_id} in channel {channel_id}")
+
+            # Return the transcript in the same format as the video-transcript API
+            return {
+                "channel_id": channel_id,
+                "video_id": video_id,
+                "title": video["title"],
+                "transcript": transcript
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error restoring transcript for video {video_id} in channel {channel_id}: {str(e)}")
+            return {"error": f"Error restoring transcript: {str(e)}"}, 500
 
 # Add user namespace to API
 api.add_namespace(auth_ns, path='/dictation-studio/auth')
