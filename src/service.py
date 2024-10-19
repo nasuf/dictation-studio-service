@@ -563,7 +563,7 @@ class VideoTranscript(Resource):
         try:
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
             video_data = redis_resource_client.hget(video_list_key, 'videos')
-            if video_data is None:
+            if not video_data:
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
             
@@ -672,7 +672,7 @@ class YouTubeVideoDelete(Resource):
     @jwt_required_and_refresh()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def delete(self, channel_id, video_id):
-        """Delete a specific video from a channel"""
+        """Delete a specific video from a channel and remove related user progress"""
         try:
             video_list_key = f"{VIDEO_PREFIX}{channel_id}"
             videos_data = redis_resource_client.hget(video_list_key, 'videos')
@@ -693,8 +693,19 @@ class YouTubeVideoDelete(Resource):
             # Update Redis with the new video list
             redis_resource_client.hset(video_list_key, 'videos', json.dumps(updated_videos))
 
-            logger.info(f"Successfully deleted video {video_id} from channel {channel_id}")
-            return {"message": f"Video {video_id} deleted successfully from channel {channel_id}"}, 200
+            # Remove dictation progress for all users
+            for user_key in redis_user_client.scan_iter("user:*"):
+                user_data = redis_user_client.hgetall(user_key)
+                if b'dictation_progress' in user_data:
+                    dictation_progress = json.loads(user_data[b'dictation_progress'].decode('utf-8'))
+                    video_key = f"{channel_id}:{video_id}"
+                    if video_key in dictation_progress:
+                        del dictation_progress[video_key]
+                        redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
+                        logger.info(f"Removed dictation progress for video {video_id} from user {user_key.decode('utf-8')}")
+
+            logger.info(f"Successfully deleted video {video_id} from channel {channel_id} and removed related user progress")
+            return {"message": f"Video {video_id} deleted successfully from channel {channel_id} and related user progress removed"}, 200
 
         except Exception as e:
             logger.error(f"Error deleting video {video_id} from channel {channel_id}: {str(e)}")

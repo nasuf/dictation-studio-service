@@ -142,8 +142,8 @@ class DictationProgress(Resource):
                 return {"channelId": channel_id, "videoId": video_id, "userInput": "", "currentTime": 0, "overallCompletion": 0}, 200
 
             logger.info(f"Retrieved dictation progress for user: {user_email}, channel: {channel_id}, video: {video_key}")
-            return {"channelId": channel_id, "videoId": video_id, "userInput": progress['userInput'],
-                     "currentTime": progress['currentTime'], "overallCompletion": progress['overallCompletion']}, 200
+            return {"channelId": channel_id, "videoId": video_id, "userInput": progress['userInput'], 
+                    "currentTime": progress['currentTime'], "overallCompletion": progress['overallCompletion']}, 200
 
         except Exception as e:
             logger.error(f"Error retrieving dictation progress: {str(e)}")
@@ -362,16 +362,16 @@ class UserConfig(Resource):
 
             # Update user data with new values
             for key, value in config_data.items():
-                if isinstance(value, dict):
+                if isinstance(value, (dict, list)):
                     existing_value = user_data.get(key.encode(), b'{}').decode('utf-8')
                     try:
                         existing_dict = json.loads(existing_value)
                     except json.JSONDecodeError:
                         existing_dict = {}
-                    updated_value = update_nested_dict(existing_dict, value)
+                    updated_value = update_nested_dict(existing_dict, value) if isinstance(value, dict) else value
                     redis_user_client.hset(user_key, key, json.dumps(updated_value))
                 else:
-                    redis_user_client.hset(user_key, key, json.dumps(value))
+                    redis_user_client.hset(user_key, key, value)
 
             logger.info(f"Updated configuration for user: {user_email}")
             
@@ -380,10 +380,12 @@ class UserConfig(Resource):
             updated_config = {}
             for k, v in updated_user_data.items():
                 if k != b'password':
+                    key = k.decode('utf-8')
+                    value = v.decode('utf-8')
                     try:
-                        updated_config[k.decode('utf-8')] = json.loads(v.decode('utf-8'))
+                        updated_config[key] = json.loads(value)
                     except json.JSONDecodeError:
-                        updated_config[k.decode('utf-8')] = v.decode('utf-8')
+                        updated_config[key] = value
             
             return {"message": "User configuration updated successfully", "config": updated_config}, 200
 
@@ -409,7 +411,15 @@ class UserConfig(Resource):
                 return {"error": "User not found"}, 404
 
             # Convert all values to JSON, except for the password
-            config = {k.decode('utf-8'): json.loads(v.decode('utf-8')) for k, v in user_data.items() if k != b'password'}
+            config = {}
+            for k, v in user_data.items():
+                if k != b'password':
+                    key = k.decode('utf-8')
+                    value = v.decode('utf-8')
+                    try:
+                        config[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        config[key] = value
 
             logger.info(f"Retrieved configuration for user: {user_email}")
             return {"config": config}, 200
