@@ -5,6 +5,7 @@ import json
 import logging
 from config import CHANNEL_PREFIX, VIDEO_PREFIX
 from jwt_utils import jwt_required_and_refresh
+from datetime import datetime
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class DictationProgress(Resource):
             redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
 
             # Update structured duration data
-            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}}').decode('utf-8'))
+            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}, "date": {}}').decode('utf-8'))
 
             channel_id = progress_data['channelId']
             video_id = progress_data['videoId']
@@ -101,6 +102,15 @@ class DictationProgress(Resource):
             channel_data['duration'] += duration_diff
             duration_data['duration'] += duration_diff
 
+            # Update daily duration
+            today = datetime.now().strftime('%Y-%m-%d')
+            if 'date' not in duration_data:
+                duration_data['date'] = {}
+            if today in duration_data['date']:
+                duration_data['date'][today] += duration_diff
+            else:
+                duration_data['date'][today] = duration_diff
+
             redis_user_client.hset(user_key, 'duration_data', json.dumps(duration_data))
 
             logger.info(f"Updated progress and duration for user: {user_email}, channel: {channel_id}, video: {video_id}")
@@ -108,7 +118,8 @@ class DictationProgress(Resource):
                 "message": "Dictation progress and video duration updated successfully",
                 "videoDuration": new_duration,
                 "channelTotalDuration": channel_data['duration'],
-                "totalDuration": duration_data['duration']
+                "totalDuration": duration_data['duration'],
+                "dailyDuration": duration_data['date'][today]
             }, 200
 
         except Exception as e:
@@ -311,7 +322,7 @@ class UserDuration(Resource):
     @jwt_required_and_refresh()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
-        """Get user's total duration"""
+        """Get user's total duration and daily durations"""
         try:
             user_email = get_jwt_identity()
             redis_user_client = get_redis_user_client()
@@ -322,16 +333,20 @@ class UserDuration(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}}').decode('utf-8'))
+            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}, "date": {}}').decode('utf-8'))
 
             total_duration = duration_data.get('duration', 0)
+            daily_durations = duration_data.get('date', {})
 
-            logger.info(f"Retrieved total duration for user: {user_email}")
-            return {"totalDuration": total_duration}, 200
+            logger.info(f"Retrieved total and daily durations for user: {user_email}")
+            return {
+                "totalDuration": total_duration,
+                "dailyDurations": daily_durations
+            }, 200
 
         except Exception as e:
-            logger.error(f"Error retrieving total duration: {str(e)}")
-            return {"error": f"An error occurred while retrieving total duration: {str(e)}"}, 500
+            logger.error(f"Error retrieving total and daily durations: {str(e)}")
+            return {"error": f"An error occurred while retrieving durations: {str(e)}"}, 500
 
 @user_ns.route('/config')
 class UserConfig(Resource):
