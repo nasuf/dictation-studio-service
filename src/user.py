@@ -85,39 +85,34 @@ class DictationProgress(Resource):
 
             channel_id = progress_data['channelId']
             video_id = progress_data['videoId']
-            new_duration = progress_data['duration']
+            duration_increment = progress_data['duration']  # This is now the increment
 
+            # Update total duration
+            duration_data['duration'] += duration_increment
+
+            # Update channel duration
             if channel_id not in duration_data['channels']:
                 duration_data['channels'][channel_id] = {"duration": 0, "videos": {}}
+            duration_data['channels'][channel_id]['duration'] += duration_increment
 
-            channel_data = duration_data['channels'][channel_id]
-
-            if video_id in channel_data['videos']:
-                old_duration = channel_data['videos'][video_id]
-                duration_diff = new_duration - old_duration
-            else:
-                duration_diff = new_duration
-
-            channel_data['videos'][video_id] = new_duration
-            channel_data['duration'] += duration_diff
-            duration_data['duration'] += duration_diff
+            # Update video duration
+            if video_id not in duration_data['channels'][channel_id]['videos']:
+                duration_data['channels'][channel_id]['videos'][video_id] = 0
+            duration_data['channels'][channel_id]['videos'][video_id] += duration_increment
 
             # Update daily duration
             today = datetime.now().strftime('%Y-%m-%d')
-            if 'date' not in duration_data:
-                duration_data['date'] = {}
-            if today in duration_data['date']:
-                duration_data['date'][today] += duration_diff
-            else:
-                duration_data['date'][today] = duration_diff
+            if today not in duration_data['date']:
+                duration_data['date'][today] = 0
+            duration_data['date'][today] += duration_increment
 
             redis_user_client.hset(user_key, 'duration_data', json.dumps(duration_data))
 
             logger.info(f"Updated progress and duration for user: {user_email}, channel: {channel_id}, video: {video_id}")
             return {
                 "message": "Dictation progress and video duration updated successfully",
-                "videoDuration": new_duration,
-                "channelTotalDuration": channel_data['duration'],
+                "videoDuration": duration_data['channels'][channel_id]['videos'][video_id],
+                "channelTotalDuration": duration_data['channels'][channel_id]['duration'],
                 "totalDuration": duration_data['duration'],
                 "dailyDuration": duration_data['date'][today]
             }, 200
@@ -442,3 +437,4 @@ class UserConfig(Resource):
         except Exception as e:
             logger.error(f"Error retrieving user configuration: {str(e)}")
             return {"error": f"An error occurred while retrieving user configuration: {str(e)}"}, 500
+
