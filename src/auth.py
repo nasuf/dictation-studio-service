@@ -89,16 +89,14 @@ class UserInfo(Resource):
         user_exists = redis_user_client.exists(user_key)
 
         if user_exists:
-            # User exists, retrieve additional details
+            # User exists, update and retrieve additional details
+            redis_user_client.hmset(user_key, {
+                'email': data['email'],
+                'avatar': data['avatar'],
+                'username': data['username']
+            })
             user_data = redis_user_client.hgetall(user_key)
-            user_info = {
-                'email': user_data.get(b'email', b'').decode('utf-8'),
-                'avatar': user_data.get(b'avatar', b'').decode('utf-8'),
-                'username': user_data.get(b'name', b'').decode('utf-8'),
-                'role': user_data.get(b'role', b'').decode('utf-8'),
-                'language': user_data.get(b'language', b'').decode('utf-8'),
-                'dictation_config': json.loads(user_data.get(b'dictation_config', b'{}').decode('utf-8'))
-            }
+            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k.decode('utf-8') != 'password'}
         else:
             # User does not exist, create new user
             redis_user_client.hmset(user_key, {
@@ -341,3 +339,4 @@ class UserRole(Resource):
         except Exception as e:
             logger.error(f"Error updating user role: {str(e)}")
             return {"error": f"An error occurred while updating user role: {str(e)}"}, 500
+
