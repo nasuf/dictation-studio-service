@@ -1,8 +1,6 @@
 from flask import jsonify, request, make_response
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
 import redis
 import logging
 from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB
@@ -10,7 +8,6 @@ from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
 import json
-from datetime import timedelta
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -51,6 +48,17 @@ role_update_model = auth_ns.model('RoleUpdate', {
     'role': fields.String(required=True, description='New role for the user')
 })
 
+supabase_token_model = auth_ns.model('SupabaseToken', {
+    'access_token': fields.String(required=True, description='Supabase Access Token')
+})
+
+# Define model for user info
+user_info_model = auth_ns.model('UserInfo', {
+    'email': fields.String(required=True, description='User email'),
+    'avatar': fields.String(required=True, description='User avatar URL'),
+    'username': fields.String(required=True, description='Username')
+})
+
 def hash_password(password):
     """
     Perform server-side encryption on the password.
@@ -68,109 +76,52 @@ def verify_password(stored_password, provided_password):
     new_key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
     return new_key == stored_key
 
-@auth_ns.route('/verify-google-token')
-class GoogleTokenVerification(Resource):
-    @auth_ns.expect(google_token_model)
-    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Token', 500: 'Server Error'})
-    def post(self):
-        """Verify Google Access token and get user info"""
-        data = request.json
-        token = data.get('token')
-
-        try:
-            credentials = Credentials(token=token)
-            service = build('oauth2', 'v2', credentials=credentials)
-            user_info = service.userinfo().get().execute()
-
-            email = user_info['email']
-            name = user_info.get('name')
-            avatar = user_info.get('picture')
-
-            # Check if user already exists in Redis
-            user_exists = redis_user_client.exists(f"user:{email}")
-
-            # Create a JWT token
-            jwt_token = create_access_token(
-                identity=email,
-                expires_delta=JWT_ACCESS_TOKEN_EXPIRES
-            )
-
-            if user_exists:
-                # Update user information in Redis, preserving the existing role
-                existing_user_data = redis_user_client.hgetall(f"user:{email}")
-                existing_role = existing_user_data.get(b'role', b'user').decode('utf-8')
-                
-                user_data = {
-                    "email": email,
-                    "name": name,
-                    "avatar": avatar,
-                    "role": existing_role
-                }
-                redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
-                logger.info(f"Updated existing user via Google: {email}")
-            else:
-                # Store new user information in Redis
-                user_data = {
-                    "email": email,
-                    "name": name,
-                    "avatar": avatar,
-                    "role": "user"
-                }
-                redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
-                logger.info(f"New user registered via Google: {email}")
-
-            # Retrieve user info from Redis to ensure we return the most up-to-date information
-            stored_user_data = redis_user_client.hgetall(f"user:{email}")
-            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in stored_user_data.items() if k != b'password'}
-
-            response_data = {
-                "message": "Token verified successfully",
-                "user": user_info
-            }
-            response = make_response(jsonify(response_data), 200)
-            response.headers['x-ds-token'] = jwt_token
-            return response
-
-        except Exception as e:
-            logger.warning(f"Invalid Google token: {str(e)}")
-            return {"error": "Invalid token"}, 400
-
 @auth_ns.route('/userinfo')
 class UserInfo(Resource):
-    @jwt_required_and_refresh()
-    @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
-    def get(self):
-        """Check if the user is logged in, return user info, and refresh the JWT token"""
-        try:
-            current_user_email = get_jwt_identity()
-            user_data = redis_user_client.hgetall(f"user:{current_user_email}")
-            
-            if not user_data:
-                logger.warning(f"User data not found for email: {current_user_email}")
-                return {"error": "User not found"}, 401
+    @auth_ns.expect(user_info_model)
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
+    def post(self):
+        """Update or create user information and return user details"""
+        data = request.json
+        user_key = f"user:{data['email']}"
 
-            # Convert byte strings to regular strings and parse JSON fields
-            user_info = {}
-            for k, v in user_data.items():
-                if k != b'password' and k != b'dictation_progress':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
-                    try:
-                        user_info[key] = json.loads(value)
-                    except json.JSONDecodeError:
-                        user_info[key] = value
+        # Check if user exists
+        user_exists = redis_user_client.exists(user_key)
 
-            response_data = {
-                "message": "User is logged in",
-                "user": user_info,
+        if user_exists:
+            # User exists, retrieve additional details
+            user_data = redis_user_client.hgetall(user_key)
+            user_info = {
+                'email': user_data.get(b'email', b'').decode('utf-8'),
+                'avatar': user_data.get(b'avatar', b'').decode('utf-8'),
+                'username': user_data.get(b'name', b'').decode('utf-8'),
+                'role': user_data.get(b'role', b'').decode('utf-8'),
+                'language': user_data.get(b'language', b'').decode('utf-8'),
+                'dictation_config': json.loads(user_data.get(b'dictation_config', b'{}').decode('utf-8'))
+            }
+        else:
+            # User does not exist, create new user
+            redis_user_client.hmset(user_key, {
+                'email': data['email'],
+                'avatar': data['avatar'],
+                'username': data['username']
+            })
+            user_info = {
+                'email': data['email'],
+                'avatar': data['avatar'],
+                'username': data['username'],
             }
 
-            logger.info(f"User info retrieved: {current_user_email}")
-            return response_data, 200
+        # Create a new JWT token for the user
+        jwt_token = create_access_token(identity=data['email'], expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
 
-        except Exception as e:
-            logger.error(f"Error in userinfo: {str(e)}")
-            return {"error": "An error occurred while retrieving user info"}, 500
+        # Prepare response
+        response = make_response(jsonify({
+            "message": "User information processed successfully",
+            "user": user_info
+        }), 200)
+        response.headers['x-ds-token'] = jwt_token
+        return response
 
 @auth_ns.route('/logout')
 class Logout(Resource):
