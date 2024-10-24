@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
 import redis
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB
+from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, USER_ROLE_DEFAULT
 from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
@@ -102,7 +102,8 @@ class UserInfo(Resource):
             redis_user_client.hmset(user_key, {
                 'email': data['email'],
                 'avatar': data['avatar'],
-                'username': data['username']
+                'username': data['username'],
+                'role': USER_ROLE_DEFAULT
             })
             user_info = {
                 'email': data['email'],
