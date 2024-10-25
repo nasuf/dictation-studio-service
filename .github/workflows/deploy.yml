@@ -1,4 +1,4 @@
-name: Deploy Python service to VPS
+name: Deploy Flask Application to VPS
 
 on:
   push:
@@ -6,29 +6,13 @@ on:
       - main
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
 
-      - name: Set up Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: "3.8"
-
-      - name: Install python3-venv
-        run: sudo apt-get install -y python3-venv
-
-      - name: Install dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r requirements.txt
-
-      - name: Install Gunicorn
-        run: pip3 install gunicorn
-
-      - name: Transfer project files to VPS
+      - name: Copy project to VPS
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.HOST }}
@@ -37,9 +21,8 @@ jobs:
           port: ${{ secrets.PORT }}
           source: "./*"
           target: "/app/dictation-studio-service"
-          rm: true
 
-      - name: Deploy to VPS
+      - name: Build and run Docker container on VPS
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.HOST }}
@@ -48,10 +31,7 @@ jobs:
           port: ${{ secrets.PORT }}
           script: |
             cd /app/dictation-studio-service
-            python3 -m venv venv
-            source venv/bin/activate
-            pip3 install -r requirements.txt
-            pip3 install gunicorn
-            # Start the application using gunicorn
-            cd src
-            gunicorn --workers 3 --bind 0.0.0.0:4001 service:app
+            docker build -t dictation-studio-service .
+            docker stop dictation-studio-service || true
+            docker rm dictation-studio-service || true
+            docker run -d --name dictation-studio-service -p 4001:4001 dictation-studio-service
