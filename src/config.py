@@ -4,7 +4,7 @@ from datetime import timedelta
 # Redis Configuration
 REDIS_HOST = '192.210.235.115'
 REDIS_PORT = 6380
-REDIS_PASSWORD = 'nasuf713!'
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD')
 
 # Redis Configuration for User Data
 REDIS_USER_DB = 0 
