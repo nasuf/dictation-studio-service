@@ -48,6 +48,10 @@ jobs:
           port: ${{ secrets.PORT }}
           script: |
             cd /app/dictation-studio-service
+            python3 -m venv venv
             source venv/bin/activate
             pip3 install -r requirements.txt
+            pip3 install gunicorn
+            # Start the application using gunicorn
+            cd src
             gunicorn --workers 3 --bind 0.0.0.0:4001 service:app
