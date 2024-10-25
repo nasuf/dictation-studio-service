@@ -1,10 +1,11 @@
 FROM python:3.8-slim
 
-WORKDIR /app
+WORKDIR /app/src
 
-COPY . /app
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY src/ ./
 
 EXPOSE 4001
 
