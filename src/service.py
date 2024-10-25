@@ -10,7 +10,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import redis
 import requests
 from bs4 import BeautifulSoup
-from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX
+from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX, REDIS_PASSWORD
 from flask_jwt_extended import JWTManager
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from auth import auth_ns
@@ -46,8 +46,8 @@ api = Api(app, version='1.0', title='Dictation Studio API',
 ns = api.namespace('service', path='/dictation-studio/service', description='Dictation Studio Service Operations')
 
 # Redis connection
-redis_resource_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB)
-redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB)
+redis_resource_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB, password=REDIS_PASSWORD)
+redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
 
 app.config['redis_resource_client'] = redis_resource_client
 app.config['redis_user_client'] = redis_user_client

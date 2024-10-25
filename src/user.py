@@ -3,9 +3,10 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import get_jwt_identity
 import json
 import logging
-from config import CHANNEL_PREFIX, VIDEO_PREFIX
+from config import CHANNEL_PREFIX, VIDEO_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD
 from jwt_utils import jwt_required_and_refresh
 from datetime import datetime
+import redis
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ def get_redis_resource_client():
 
 def get_redis_user_client():
     from flask import current_app
-    return current_app.config['redis_user_client']
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
 
 # Define model for dictation progress
 dictation_progress_model = user_ns.model('DictationProgress', {

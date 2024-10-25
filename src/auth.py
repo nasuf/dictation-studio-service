@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
 import redis
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, USER_ROLE_DEFAULT
+from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD, USER_ROLE_DEFAULT
 from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
@@ -13,7 +13,7 @@ import json
 logger = logging.getLogger(__name__)
 
 # Redis connection for user data
-redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB)
+redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
 
 # Create a namespace for user-related routes
 auth_ns = Namespace('auth', description='Authentication operations')

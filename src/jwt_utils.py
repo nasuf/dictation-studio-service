@@ -3,10 +3,10 @@ import logging
 from flask import request, make_response
 from flask_jwt_extended import verify_jwt_in_request, create_access_token, get_jwt_identity, get_jwt
 import redis
-from config import REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB
+from config import REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB, REDIS_PASSWORD
 from datetime import datetime
 
-redis_blacklist_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_BLACKLIST_DB)
+redis_blacklist_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_BLACKLIST_DB, password=REDIS_PASSWORD)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

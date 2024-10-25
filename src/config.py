@@ -2,12 +2,13 @@ import os
 from datetime import timedelta
 
 # Redis Configuration
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
+REDIS_HOST = '192.210.235.115'
+REDIS_PORT = 6380
+REDIS_PASSWORD = 'nasuf713!'
 
 # Redis Configuration for User Data
-REDIS_USER_DB = 1 
-REDIS_RESOURCE_DB = 0
+REDIS_USER_DB = 0 
+REDIS_RESOURCE_DB = 1
 REDIS_BLACKLIST_DB = 2
 
 CHANNEL_PREFIX = "channel:"
