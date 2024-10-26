@@ -21,6 +21,8 @@ jobs:
           port: ${{ secrets.PORT }}
           source: "./*"
           target: "/app/dictation-studio-service"
+        env:
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
 
       - name: Build and run Docker container on VPS
         uses: appleboy/ssh-action@master
