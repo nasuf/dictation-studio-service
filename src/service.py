@@ -328,7 +328,6 @@ class YouTubeChannel(Resource):
     def get(self):
         """Get all YouTube channel information from Redis"""
         try:
-            logger.info(os.getenv('REDIS_PASSWORD'))
             all_channels = []
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
                 channel_info = redis_resource_client.hgetall(key)

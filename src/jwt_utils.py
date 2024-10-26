@@ -50,4 +50,4 @@ def jwt_required_and_refresh():
     return decorator
 
 def add_token_to_blacklist(jti):
-    redis_blacklist_client.set(jti, 'true')
+    redis_blacklist_client.set(jti, 'true', ex=JWT_ACCESS_TOKEN_EXPIRES)
