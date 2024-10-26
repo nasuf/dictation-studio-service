@@ -13,9 +13,10 @@ REDIS_BLACKLIST_DB = 2
 
 CHANNEL_PREFIX = "channel:"
 VIDEO_PREFIX = "video:"
+USER_PREFIX = "user:"
 
 # JWT Configuration
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'your-secret-key')
-JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=120)
+JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=2)
 
 USER_ROLE_DEFAULT = "Free Plan User"

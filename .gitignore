@@ -58,3 +58,6 @@ venv/
 
 uploads/
 dump.rdb
+
+setup.sh
+startup.sh

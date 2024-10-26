@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import get_jwt_identity
 import json
 import logging
-from config import CHANNEL_PREFIX, VIDEO_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD
+from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD
 from jwt_utils import jwt_required_and_refresh
 from datetime import datetime
 import redis
@@ -64,7 +64,7 @@ class DictationProgress(Resource):
             if not all(field in progress_data for field in required_fields):
                 return {"error": "Missing required fields"}, 400
 
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
@@ -134,7 +134,7 @@ class DictationProgress(Resource):
             if not channel_id or not video_id:
                 return {"error": "channelId and videoId are required"}, 400
 
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
@@ -169,7 +169,7 @@ class ChannelDictationProgress(Resource):
             if not channel_id:
                 return {"error": "channelId is required"}, 400
 
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
@@ -202,7 +202,7 @@ class ChannelDictationProgress(Resource):
             user_email = get_jwt_identity()
 
             # Get existing user data
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
@@ -239,7 +239,7 @@ class AllUsers(Resource):
         try:
             # Get all user keys
             redis_user_client = get_redis_user_client()
-            user_keys = redis_user_client.keys("user:*")
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
             users = []
             for key in user_keys:
                 user_data = redis_user_client.hgetall(key)
@@ -261,7 +261,7 @@ class AllDictationProgress(Resource):
         """Get all dictation progress for the user with channel and video details"""
         try:
             user_email = get_jwt_identity()
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
@@ -323,7 +323,7 @@ class UserDuration(Resource):
             user_email = get_jwt_identity()
             redis_user_client = get_redis_user_client()
 
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             user_data = redis_user_client.hgetall(user_key)
 
             if not user_data:
@@ -355,7 +355,7 @@ class UserConfig(Resource):
             user_email = get_jwt_identity()
             config_data = request.json
 
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 
@@ -414,7 +414,7 @@ class UserConfig(Resource):
         try:
             user_email = get_jwt_identity()
 
-            user_key = f"user:{user_email}"
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client = get_redis_user_client()
             user_data = redis_user_client.hgetall(user_key)
 

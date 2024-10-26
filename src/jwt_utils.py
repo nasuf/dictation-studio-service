@@ -3,7 +3,7 @@ import logging
 from flask import request, make_response
 from flask_jwt_extended import verify_jwt_in_request, create_access_token, get_jwt_identity, get_jwt
 import redis
-from config import REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB, REDIS_PASSWORD
+from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB, REDIS_PASSWORD
 from datetime import datetime
 
 redis_blacklist_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_BLACKLIST_DB, password=REDIS_PASSWORD)
@@ -28,7 +28,7 @@ def jwt_required_and_refresh():
             new_token = None
             if time_left < 300:  # auto refresh token
                 current_user = get_jwt_identity()
-                new_token = create_access_token(identity=current_user)
+                new_token = create_access_token(identity=current_user, expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
                 logger.info(f"Token refreshed for user: {current_user}")
             
             result = fn(*args, **kwargs)
