@@ -36,4 +36,4 @@ jobs:
             docker build -t dictation-studio-service .
             docker stop dictation-studio-service || true
             docker rm dictation-studio-service || true
-            docker run -d --name dictation-studio-service -p 4001:4001 dictation-studio-service
+            docker run -d --name dictation-studio-service -p 4001:4001 -e REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} dictation-studio-service
