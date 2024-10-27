@@ -14,7 +14,11 @@ def jwt_required_and_refresh():
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            verify_jwt_in_request()
+            try:
+                verify_jwt_in_request()
+            except Exception as e:
+                logger.error(f"Error verifying JWT: {e}")
+                return {"msg": "Invalid token"}, 401
             existing_token = get_jwt()
             jti = existing_token['jti']
             
