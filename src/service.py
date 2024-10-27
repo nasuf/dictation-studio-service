@@ -410,6 +410,8 @@ class YouTubeVideoList(Resource):
         try:
             data = json.loads(request.form.get('data', '[]'))
             transcript_files = request.files.getlist('transcript_files')
+            uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
+            os.makedirs(uploads_dir, exist_ok=True)
 
             if not data or len(data) != len(transcript_files):
                 logger.warning("Invalid input: data and transcript files mismatch")
@@ -439,12 +441,10 @@ class YouTubeVideoList(Resource):
                     continue
 
                 # Save the uploaded transcript file
-                uploads_dir = os.path.join(os.getcwd(), 'uploads')
                 filename = secure_filename(f"{video_id}.srt")
                 file_path = os.path.join(uploads_dir, filename)
                 
                 try:
-                    os.makedirs(uploads_dir, exist_ok=True)
                     transcript_file.save(file_path)
                     logger.info(f"File saved successfully: {file_path}")
                 except Exception as e:
@@ -488,19 +488,6 @@ class YouTubeVideoList(Resource):
 
                 logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
-
-            # Clean up uploaded files
-            # for filename in os.listdir(uploads_dir):
-            #     file_path = os.path.join(uploads_dir, filename)
-            #     try:
-            #         if os.path.isfile(file_path) or os.path.islink(file_path):
-            #             os.unlink(file_path)
-            #         elif os.path.isdir(file_path):
-            #             shutil.rmtree(file_path)
-            #     except Exception as e:
-            #         logger.error(f'Failed to delete {file_path}. Reason: {e}')
-
-            # logger.info("Uploads folder cleared successfully")
             return {"results": results}, 200
         except Exception as e:
             logger.error(f"Error saving video list: {str(e)}")

@@ -21,8 +21,6 @@ jobs:
           port: ${{ secrets.PORT }}
           source: "./*"
           target: "/app/dictation-studio-service"
-        env:
-          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
 
       - name: Build and run Docker container on VPS
         uses: appleboy/ssh-action@master
@@ -36,4 +34,4 @@ jobs:
             docker build -t dictation-studio-service .
             docker stop dictation-studio-service || true
             docker rm dictation-studio-service || true
-            docker run -d --name dictation-studio-service -p 4001:4001 -e REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} dictation-studio-service
+            docker run -d --name dictation-studio-service -p 4001:4001 -v ${{ secrets.UPLOADS_DIR }}:${{ secrets.UPLOADS_DIR }} -e REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} -e UPLOADS_DIR=${{ secrets.UPLOADS_DIR }} dictation-studio-service
