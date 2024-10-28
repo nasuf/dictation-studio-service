@@ -33,8 +33,9 @@ register_model = auth_ns.model('Register', {
 
 # Add new model for login
 login_model = auth_ns.model('Login', {
-    'username_or_email': fields.String(required=True, description='Username or Email'),
-    'password': fields.String(required=True, description='User password')
+    'email': fields.String(required=True, description='Email'),
+    'username': fields.String(required=True, description='Username'),
+    'avatar': fields.String(required=True, description='User avatar URL')
 })
 
 # Add new model for email check
@@ -200,60 +201,71 @@ class Register(Resource):
 @auth_ns.route('/login')
 class Login(Resource):
     @auth_ns.expect(login_model)
-    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def post(self):
-        """Login a user"""
-        data = request.json
-        username_or_email = data.get('username_or_email')
-        password = data.get('password')
-
-        if not username_or_email or not password:
-            return {"error": "Username/Email and password are required"}, 400
-
+        """Login or create a user without password"""
         try:
-            # Check if the input is an email or username
-            if '@' in username_or_email:
-                user_key = f"user:{username_or_email}"
+            data = request.json
+            email = data.get('email')
+            username = data.get('username')
+            avatar = data.get('avatar')
+
+            if not all([email, username, avatar]):
+                return {"error": "Username, email and avatar are required"}, 400
+
+            user_key = f"user:{email}"
+            
+            # Get existing user data if it exists
+            existing_user = redis_user_client.hgetall(user_key)
+            
+            # Prepare user data
+            user_data = {
+                "email": email,
+                "username": username,
+                "avatar": avatar
+            }
+
+            if not existing_user:
+                # New user - add role
+                user_data["role"] = USER_ROLE_DEFAULT
+                logger.info(f"Creating new user: {email}")
             else:
-                # Find the user by username
-                for key in redis_user_client.scan_iter("user:*"):
-                    user_data = redis_user_client.hgetall(key)
-                    if user_data.get(b'username', b'').decode('utf-8') == username_or_email:
-                        user_key = key.decode('utf-8')
-                        break
-                else:
-                    return {"error": "User not found"}, 401
+                # Existing user - preserve existing data that's not being updated
+                existing_data = {k.decode('utf-8'): v.decode('utf-8') 
+                               for k, v in existing_user.items()}
+                # Preserve existing fields that are not being updated
+                for key in existing_data:
+                    if key not in user_data and key != 'password':
+                        user_data[key] = existing_data[key]
+                logger.info(f"Updating existing user: {email}")
 
-            user_data = redis_user_client.hgetall(user_key)
-            if not user_data:
-                return {"error": "User not found"}, 401
+            # Update Redis with user data
+            redis_user_client.hmset(user_key, user_data)
 
-            stored_password = user_data.get(b'password')
-            if not stored_password or not verify_password(stored_password, password):
-                return {"error": "Invalid credentials"}, 401
-
-            # User authenticated, create JWT token
-            email = user_data.get(b'email').decode('utf-8')
+            # Create JWT token
             jwt_token = create_access_token(
                 identity=email,
                 expires_delta=JWT_ACCESS_TOKEN_EXPIRES
             )
 
-            # Prepare user info
-            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+            # Get complete user data to return
+            updated_user_data = redis_user_client.hgetall(user_key)
+            user_info = {k.decode('utf-8'): v.decode('utf-8') 
+                        for k, v in updated_user_data.items() 
+                        if k.decode('utf-8') != 'password'}
 
-            logger.info(f"User logged in successfully: {email}")
             response_data = {
                 "message": "Login successful",
                 "user": user_info
             }
+            
             response = make_response(jsonify(response_data), 200)
             response.headers['x-ds-token'] = jwt_token
             return response
 
         except Exception as e:
             logger.error(f"Error during login: {str(e)}")
-            return {"error": "An error occurred during login"}, 500
+            return {"error": f"An error occurred during login: {str(e)}"}, 500
 
 @auth_ns.route('/check-email')
 class CheckEmail(Resource):
