@@ -97,7 +97,20 @@ class UserInfo(Resource):
                 'username': data['username']
             })
             user_data = redis_user_client.hgetall(user_key)
-            user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k.decode('utf-8') != 'password'}
+            # Parse JSON strings into objects for specific fields
+            user_info = {}
+            for k, v in user_data.items():
+                if k != b'password':
+                    key = k.decode('utf-8')
+                    value = v.decode('utf-8')
+                    # Try to parse JSON strings for specific fields
+                    if key in ['dictation_config', 'dictation_progress', 'duration_data']:
+                        try:
+                            user_info[key] = json.loads(value)
+                        except json.JSONDecodeError:
+                            user_info[key] = value
+                    else:
+                        user_info[key] = value
         else:
             # User does not exist, create new user
             redis_user_client.hmset(user_key, {
