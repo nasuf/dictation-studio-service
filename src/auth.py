@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
 import redis
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD, USER_ROLE_DEFAULT
+from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD, USER_PLAN_DEFAULT
 from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
@@ -43,10 +43,10 @@ email_check_model = auth_ns.model('EmailCheck', {
     'email': fields.String(required=True, description='Email to check')
 })
 
-# Add new model for role update
-role_update_model = auth_ns.model('RoleUpdate', {
+# Add new model for plan update
+plan_update_model = auth_ns.model('PlanUpdate', {
     'email': fields.String(required=True, description='User email'),
-    'role': fields.String(required=True, description='New role for the user')
+    'plan': fields.String(required=True, description='New plan for the user')
 })
 
 supabase_token_model = auth_ns.model('SupabaseToken', {
@@ -117,7 +117,7 @@ class UserInfo(Resource):
                 'email': data['email'],
                 'avatar': data['avatar'],
                 'username': data['username'],
-                'role': USER_ROLE_DEFAULT
+                'plan': USER_PLAN_DEFAULT
             })
             user_info = {
                 'email': data['email'],
@@ -185,7 +185,7 @@ class Register(Resource):
                 "email": email,
                 "password": hashed_password,
                 "avatar": avatar,
-                "role": "user"  # Add the role field
+                "plan": USER_PLAN_DEFAULT
             }
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
@@ -239,8 +239,8 @@ class Login(Resource):
             }
 
             if not existing_user:
-                # New user - add role
-                user_data["role"] = USER_ROLE_DEFAULT
+                # New user - add plan
+                user_data["plan"] = USER_PLAN_DEFAULT
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated
@@ -329,40 +329,40 @@ class Users(Resource):
             logger.error(f"Error retrieving users: {str(e)}")
             return {"error": "An error occurred while retrieving users"}, 500
 
-@auth_ns.route('/user/role')
-class UserRole(Resource):
+@auth_ns.route('/user/plan')
+class UserPlan(Resource):
     @jwt_required_and_refresh()
-    @auth_ns.expect(role_update_model)
+    @auth_ns.expect(plan_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):
-        """Update user role"""
+        """Update user plan"""
         try:
             current_user_email = get_jwt_identity()
             current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
             
-            # only allow admin to change user role
-            if current_user_data.get(b'role', b'').decode('utf-8') != 'admin':
-                logger.warning(f"Non-admin user {current_user_email} attempted to change user role")
-                return {"error": "Only administrators can change user roles"}, 403
+            # only allow admin to change user plan
+            if current_user_data.get(b'plan', b'').decode('utf-8') != 'Admin':
+                logger.warning(f"Non-admin user {current_user_email} attempted to change user plan")
+                return {"error": "Only 'Admin' role can change user plans"}, 403
 
             data = request.json
             email = data.get('email')
-            new_role = data.get('role')
+            new_plan = data.get('plan')
 
-            if not email or not new_role:
-                return {"error": "Email and role are required"}, 400
+            if not email or not new_plan:
+                return {"error": "Email and plan are required"}, 400
 
             user_key = f"user:{email}"
             if not redis_user_client.exists(user_key):
-                logger.warning(f"Attempted to update role for non-existent user: {email}")
+                logger.warning(f"Attempted to update plan for non-existent user: {email}")
                 return {"error": "User not found"}, 404
 
-            redis_user_client.hset(user_key, 'role', new_role)
+            redis_user_client.hset(user_key, 'plan', new_plan)
 
-            logger.info(f"Updated role for user {email} to {new_role}")
-            return {"message": f"Role for user {email} updated to {new_role}"}, 200
+            logger.info(f"Updated plan for user {email} to {new_plan}")
+            return {"message": f"Plan for user {email} updated to {new_plan}"}, 200
 
         except Exception as e:
-            logger.error(f"Error updating user role: {str(e)}")
-            return {"error": f"An error occurred while updating user role: {str(e)}"}, 500
+            logger.error(f"Error updating user plan: {str(e)}")
+            return {"error": f"An error occurred while updating user plan: {str(e)}"}, 500
 
