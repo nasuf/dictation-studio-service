@@ -346,23 +346,49 @@ class UserPlan(Resource):
                 return {"error": "Only 'Admin' role can change user plans"}, 403
 
             data = request.json
-            email = data.get('email')
+            emails = data.get('emails', [])
             new_plan = data.get('plan')
 
-            if not email or not new_plan:
-                return {"error": "Email and plan are required"}, 400
+            if not emails or not new_plan:
+                return {"error": "Emails list and plan are required"}, 400
 
-            user_key = f"user:{email}"
-            if not redis_user_client.exists(user_key):
-                logger.warning(f"Attempted to update plan for non-existent user: {email}")
-                return {"error": "User not found"}, 404
+            results = []
+            for email in emails:
+                user_key = f"user:{email}"
+                if not redis_user_client.exists(user_key):
+                    logger.warning(f"Attempted to update plan for non-existent user: {email}")
+                    results.append({
+                        "email": email,
+                        "success": False,
+                        "message": "User not found"
+                    })
+                    continue
 
-            redis_user_client.hset(user_key, 'plan', new_plan)
+                try:
+                    redis_user_client.hset(user_key, 'plan', new_plan)
+                    logger.info(f"Updated plan for user {email} to {new_plan}")
+                    results.append({
+                        "email": email,
+                        "success": True,
+                        "message": f"Plan updated to {new_plan}"
+                    })
+                except Exception as e:
+                    logger.error(f"Error updating plan for user {email}: {str(e)}")
+                    results.append({
+                        "email": email,
+                        "success": False,
+                        "message": f"Error updating plan: {str(e)}"
+                    })
 
-            logger.info(f"Updated plan for user {email} to {new_plan}")
-            return {"message": f"Plan for user {email} updated to {new_plan}"}, 200
+            success_count = sum(1 for result in results if result['success'])
+            failure_count = len(results) - success_count
+
+            return {
+                "message": f"Plan update completed. {success_count} successful, {failure_count} failed.",
+                "results": results
+            }, 200
 
         except Exception as e:
-            logger.error(f"Error updating user plan: {str(e)}")
-            return {"error": f"An error occurred while updating user plan: {str(e)}"}, 500
+            logger.error(f"Error updating user plans: {str(e)}")
+            return {"error": f"An error occurred while updating user plans: {str(e)}"}, 500
 
