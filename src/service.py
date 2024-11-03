@@ -762,7 +762,7 @@ class RestoreVideoTranscript(Resource):
         """Restore transcript for a specific video from SRT file and update Redis"""
         try:
             # Construct the file path
-            uploads_dir = os.path.join(os.getcwd(), 'uploads')
+            uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
             filename = secure_filename(f"{video_id}.srt")
             file_path = os.path.join(uploads_dir, filename)
 
