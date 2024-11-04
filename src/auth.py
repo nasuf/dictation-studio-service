@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
 import redis
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD, USER_PLAN_DEFAULT
+from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD, USER_PLAN_DEFAULT, USER_ROLE_DEFAULT
 from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
@@ -117,7 +117,8 @@ class UserInfo(Resource):
                 'email': data['email'],
                 'avatar': data['avatar'],
                 'username': data['username'],
-                'plan': USER_PLAN_DEFAULT
+                'plan': USER_PLAN_DEFAULT,
+                'role': USER_ROLE_DEFAULT
             })
             user_info = {
                 'email': data['email'],
@@ -185,7 +186,8 @@ class Register(Resource):
                 "email": email,
                 "password": hashed_password,
                 "avatar": avatar,
-                "plan": USER_PLAN_DEFAULT
+                "plan": USER_PLAN_DEFAULT,
+                "role": USER_ROLE_DEFAULT
             }
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
@@ -241,6 +243,7 @@ class Login(Resource):
             if not existing_user:
                 # New user - add plan
                 user_data["plan"] = USER_PLAN_DEFAULT
+                user_data["role"] = USER_ROLE_DEFAULT
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated

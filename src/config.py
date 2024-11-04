@@ -20,3 +20,4 @@ JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'your-secret-key')
 JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=120)
 
 USER_PLAN_DEFAULT = "Free"
+USER_ROLE_DEFAULT = "User"
