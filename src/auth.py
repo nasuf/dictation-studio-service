@@ -49,6 +49,12 @@ plan_update_model = auth_ns.model('PlanUpdate', {
     'plan': fields.String(required=True, description='New plan for the user')
 })
 
+# Add new model for role update
+role_update_model = auth_ns.model('RoleUpdate', {
+    'email': fields.String(required=True, description='User email'),
+    'role': fields.String(required=True, description='New role for the user')
+})
+
 supabase_token_model = auth_ns.model('SupabaseToken', {
     'access_token': fields.String(required=True, description='Supabase Access Token')
 })
@@ -344,7 +350,7 @@ class UserPlan(Resource):
             current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
             
             # only allow admin to change user plan
-            if current_user_data.get(b'plan', b'').decode('utf-8') != 'Admin':
+            if current_user_data.get(b'role', b'').decode('utf-8') != 'Admin':
                 logger.warning(f"Non-admin user {current_user_email} attempted to change user plan")
                 return {"error": "Only 'Admin' role can change user plans"}, 403
 
@@ -394,4 +400,67 @@ class UserPlan(Resource):
         except Exception as e:
             logger.error(f"Error updating user plans: {str(e)}")
             return {"error": f"An error occurred while updating user plans: {str(e)}"}, 500
+
+@auth_ns.route('/user/role')
+class UserRole(Resource):
+    @jwt_required_and_refresh()
+    @auth_ns.expect(role_update_model)
+    @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
+    def put(self):
+        """Update user role"""
+        try:
+            current_user_email = get_jwt_identity()
+            current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
+            
+            # only allow admin to change user role
+            if current_user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+                logger.warning(f"Non-admin user {current_user_email} attempted to change user role")
+                return {"error": "Only 'Admin' role can change user roles"}, 403
+
+            data = request.json
+            emails = data.get('emails', [])
+            new_role = data.get('role')
+
+            if not emails or not new_role:
+                return {"error": "Emails list and role are required"}, 400
+
+            results = []
+            for email in emails:
+                user_key = f"user:{email}"
+                if not redis_user_client.exists(user_key):
+                    logger.warning(f"Attempted to update role for non-existent user: {email}")
+                    results.append({
+                        "email": email,
+                        "success": False,
+                        "message": "User not found"
+                    })
+                    continue
+
+                try:
+                    redis_user_client.hset(user_key, 'role', new_role)
+                    logger.info(f"Updated role for user {email} to {new_role}")
+                    results.append({
+                        "email": email,
+                        "success": True,
+                        "message": f"Role updated to {new_role}"
+                    })
+                except Exception as e:
+                    logger.error(f"Error updating role for user {email}: {str(e)}")
+                    results.append({
+                        "email": email,
+                        "success": False,
+                        "message": f"Error updating role: {str(e)}"
+                    })
+
+            success_count = sum(1 for result in results if result['success'])
+            failure_count = len(results) - success_count
+
+            return {
+                "message": f"Role update completed. {success_count} successful, {failure_count} failed.",
+                "results": results
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error updating user roles: {str(e)}")
+            return {"error": f"An error occurred while updating user roles: {str(e)}"}, 500
 
