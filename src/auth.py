@@ -8,6 +8,7 @@ from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
 import json
+from datetime import datetime, timedelta
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -46,7 +47,8 @@ email_check_model = auth_ns.model('EmailCheck', {
 # Add new model for plan update
 plan_update_model = auth_ns.model('PlanUpdate', {
     'email': fields.String(required=True, description='User email'),
-    'plan': fields.String(required=True, description='New plan for the user')
+    'plan': fields.String(required=True, description='New plan for the user'),
+    'duration': fields.Integer(required=False, description='Plan duration for the user, only applicable for "Pro" and "Premium" plans')
 })
 
 # Add new model for role update
@@ -357,9 +359,25 @@ class UserPlan(Resource):
             data = request.json
             emails = data.get('emails', [])
             new_plan = data.get('plan')
+            duration = data.get('duration')
 
             if not emails or not new_plan:
                 return {"error": "Emails list and plan are required"}, 400
+
+            # Calculate expiration date if duration is provided
+            if duration:
+                expire_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                expire_time = None
+
+            # Create plan object structure
+            plan_data = {
+                "name": new_plan,
+                "expireTime": expire_time
+            }
+            
+            # Convert to JSON string for Redis storage
+            plan_json = json.dumps(plan_data)
 
             results = []
             for email in emails:
@@ -374,12 +392,13 @@ class UserPlan(Resource):
                     continue
 
                 try:
-                    redis_user_client.hset(user_key, 'plan', new_plan)
-                    logger.info(f"Updated plan for user {email} to {new_plan}")
+                    # Store the plan object as JSON string
+                    redis_user_client.hset(user_key, 'plan', plan_json)
+                    logger.info(f"Updated plan for user {email} to {plan_data}")
                     results.append({
                         "email": email,
                         "success": True,
-                        "message": f"Plan updated to {new_plan}"
+                        "message": f"Plan updated to {new_plan} with expiration {expire_time}"
                     })
                 except Exception as e:
                     logger.error(f"Error updating plan for user {email}: {str(e)}")

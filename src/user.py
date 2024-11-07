@@ -243,7 +243,16 @@ class AllUsers(Resource):
             users = []
             for key in user_keys:
                 user_data = redis_user_client.hgetall(key)
-                user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+                user_info = {}
+                for k, v in user_data.items():
+                    key_str = k.decode('utf-8')
+                    value_str = v.decode('utf-8')
+                    try:
+                        # Attempt to parse each field as JSON
+                        user_info[key_str] = json.loads(value_str)
+                    except json.JSONDecodeError:
+                        # If parsing fails, keep it as a string
+                        user_info[key_str] = value_str
                 users.append(user_info)
 
             logger.info(f"Retrieved information for {len(users)} users")
