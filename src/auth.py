@@ -112,12 +112,11 @@ class UserInfo(Resource):
                     key = k.decode('utf-8')
                     value = v.decode('utf-8')
                     # Try to parse JSON strings for specific fields
-                    if key in ['dictation_config', 'dictation_progress', 'duration_data']:
-                        try:
-                            user_info[key] = json.loads(value)
-                        except json.JSONDecodeError:
-                            user_info[key] = value
-                    else:
+                    try:
+                        # Attempt to parse each field as JSON
+                        user_info[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        # If parsing fails, keep it as a string
                         user_info[key] = value
         else:
             # User does not exist, create new user
@@ -274,13 +273,21 @@ class Login(Resource):
 
             # Get complete user data to return
             updated_user_data = redis_user_client.hgetall(user_key)
-            user_info = {k.decode('utf-8'): v.decode('utf-8') 
-                        for k, v in updated_user_data.items() 
-                        if k.decode('utf-8') != 'password'}
+            user_data = {}  
+            for k, v in updated_user_data.items():
+                if k.decode('utf-8') != 'password':
+                    key_str = k.decode('utf-8')
+                    value_str = v.decode('utf-8')
+                    try:
+                        # Attempt to parse each field as JSON
+                        user_data[key_str] = json.loads(value_str)
+                    except json.JSONDecodeError:
+                        # If parsing fails, keep it as a string
+                        user_data[key_str] = value_str
 
             response_data = {
                 "message": "Login successful",
-                "user": user_info
+                "user": user_data
             }
             
             response = make_response(jsonify(response_data), 200)
