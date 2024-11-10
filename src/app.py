@@ -2,7 +2,6 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 import requests
 import re
-import os
 import json
 
 def get_video_id(youtube_url):

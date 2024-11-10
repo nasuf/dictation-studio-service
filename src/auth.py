@@ -1,20 +1,18 @@
 from flask import jsonify, request, make_response
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
-import redis
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, REDIS_HOST, REDIS_PORT, REDIS_USER_DB, REDIS_PASSWORD, USER_PLAN_DEFAULT, USER_ROLE_DEFAULT
-from jwt_utils import jwt_required_and_refresh, add_token_to_blacklist
+from config import JWT_ACCESS_TOKEN_EXPIRES, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
+from utils import jwt_required_and_refresh, add_token_to_blacklist
 import hashlib
 import os
 import json
 from datetime import datetime, timedelta
+from flask import current_app
+from werkzeug.local import LocalProxy
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Redis connection for user data
-redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
 
 # Create a namespace for user-related routes
 auth_ns = Namespace('auth', description='Authentication operations')
@@ -68,6 +66,8 @@ user_info_model = auth_ns.model('UserInfo', {
     'username': fields.String(required=True, description='Username')
 })
 
+redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
+
 def hash_password(password):
     """
     Perform server-side encryption on the password.
@@ -92,7 +92,7 @@ class UserInfo(Resource):
     def post(self):
         """Update or create user information and return user details"""
         data = request.json
-        user_key = f"user:{data['email']}"
+        user_key = f"{USER_PREFIX}{data['email']}"
 
         # Check if user exists
         user_exists = redis_user_client.exists(user_key)

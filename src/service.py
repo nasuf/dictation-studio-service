@@ -13,12 +13,12 @@ from bs4 import BeautifulSoup
 from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX, REDIS_PASSWORD
 from flask_jwt_extended import JWTManager
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
-from auth import auth_ns
-from user import user_ns
 import yt_dlp as youtube_dl
 from werkzeug.utils import secure_filename
-import shutil
-from jwt_utils import jwt_required_and_refresh
+from utils import jwt_required_and_refresh
+from auth import auth_ns
+from user import user_ns
+from payment import payment_ns
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -817,6 +817,7 @@ class RestoreVideoTranscript(Resource):
 # Add user namespace to API
 api.add_namespace(auth_ns, path='/dictation-studio/auth')
 api.add_namespace(user_ns, path='/dictation-studio/user')
+api.add_namespace(payment_ns, path='/dictation-studio/payment')
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
