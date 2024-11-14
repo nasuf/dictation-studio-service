@@ -42,7 +42,8 @@ STRIPE_PRICE_IDS = {
 # Define models
 payment_model = payment_ns.model('Payment', {
     'plan': fields.String(required=True, description='Plan name (Premium/Pro)', enum=['Premium', 'Pro']),
-    'duration': fields.Integer(required=True, description='Duration in days')
+    'duration': fields.Integer(required=True, description='Duration in days'),
+    'isRecurring': fields.Boolean(required=True, description='Whether the subscription is recurring')
 })
 
 redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
@@ -67,6 +68,7 @@ class CreateCheckoutSession(Resource):
             data = request.json
             plan_name = data.get('plan')
             duration = data.get('duration')
+            isRecurring = data.get('isRecurring')
 
             if not plan_name or not duration:
                 return {"error": "Plan and duration are required"}, 400
@@ -78,7 +80,8 @@ class CreateCheckoutSession(Resource):
             metadata = {
                 'user_email': user_email,
                 'plan': plan_name,
-                'duration': str(duration)
+                'duration': str(duration),
+                'isRecurring': str(isRecurring)
             }
 
             # Create Stripe checkout session
@@ -146,6 +149,7 @@ class StripeWebhook(Resource):
                 user_email = metadata.get('user_email')
                 plan_name = metadata.get('plan')
                 duration = int(metadata.get('duration', 0))
+                isRecurring = metadata.get('isRecurring')
                 logger.info(f"Received session metadata: {metadata}")
 
                 if not all([user_email, plan_name, duration]):
@@ -154,7 +158,7 @@ class StripeWebhook(Resource):
 
                 try:
                     # try to update user plan (with automatic retry)
-                    plan_data = update_user_plan(user_email, plan_name, duration)
+                    plan_data = update_user_plan(user_email, plan_name, duration, isRecurring)
                     logger.info(f"Successfully updated plan for user {user_email}: {plan_data}")
                     
                     # check if there are failed records, if so, delete them
@@ -226,7 +230,7 @@ class VerifyPayment(Resource):
 
 
 @with_retry()
-def update_user_plan(user_email, plan_name, duration):
+def update_user_plan(user_email, plan_name, duration, isRecurring):
     """Update user plan core logic"""
     user_key = f"{USER_PREFIX}{user_email}"
 
@@ -236,7 +240,8 @@ def update_user_plan(user_email, plan_name, duration):
     # create new plan data
     plan_data = {
         "name": plan_name,
-        "expireTime": expire_time
+        "expireTime": expire_time,
+        "isRecurring": isRecurring
     }
 
     # store plan data to Redis
@@ -291,10 +296,11 @@ def retry_failed_updates(self, session_id):
 
         try:
             # retry update user plan
-            plan_data = update_user_plan(
+            update_user_plan(
                 failed_update['user_email'],
                 failed_update['plan_data']['name'],
-                failed_update['plan_data']['duration']
+                failed_update['plan_data']['duration'],
+                failed_update['plan_data']['isRecurring']
             )
             
             # update successful, delete failed records
