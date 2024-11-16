@@ -44,6 +44,11 @@ user_config_model = user_ns.model('UserConfig', {
     'shortcuts': fields.Raw(description='Custom shortcuts')
 })
 
+# Add new model definition for missed words
+missed_words_model = user_ns.model('MissedWords', {
+    'words': fields.List(fields.String, required=True, description='Array of missed words')
+})
+
 @user_ns.route('/progress')
 class DictationProgress(Resource):
     @jwt_required_and_refresh()
@@ -432,4 +437,68 @@ class UserConfig(Resource):
         except Exception as e:
             logger.error(f"Error retrieving user configuration: {str(e)}")
             return {"error": f"An error occurred while retrieving user configuration: {str(e)}"}, 500
+
+@user_ns.route('/missed-words')
+class MissedWords(Resource):
+    @jwt_required_and_refresh()
+    @user_ns.expect(missed_words_model)
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def post(self):
+        """Add new missed words to user's missed words list"""
+        try:
+            user_email = get_jwt_identity()
+            words_data = request.json
+
+            if 'words' not in words_data or not isinstance(words_data['words'], list):
+                return {"error": "Invalid input format. Expected 'words' array"}, 400
+
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get existing missed words or initialize empty set
+            missed_words = set(json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8')))
+            
+            # Add new words (set will automatically handle duplicates)
+            missed_words.update(words_data['words'])
+            
+            # Convert back to list and store
+            missed_words_list = list(missed_words)
+            redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_list))
+
+            logger.info(f"Updated missed words for user: {user_email}")
+            return {
+                "message": "Missed words updated successfully",
+                "missed_words": missed_words_list
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error updating missed words: {str(e)}")
+            return {"error": f"An error occurred while updating missed words: {str(e)}"}, 500
+
+    @jwt_required_and_refresh()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def get(self):
+        """Get user's missed words list"""
+        try:
+            user_email = get_jwt_identity()
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get missed words or return empty list if none exist
+            missed_words = json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8'))
+
+            logger.info(f"Retrieved missed words for user: {user_email}")
+            return {
+                "missed_words": missed_words
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving missed words: {str(e)}")
+            return {"error": f"An error occurred while retrieving missed words: {str(e)}"}, 500
 
