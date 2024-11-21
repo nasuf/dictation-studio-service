@@ -502,3 +502,41 @@ class MissedWords(Resource):
             logger.error(f"Error retrieving missed words: {str(e)}")
             return {"error": f"An error occurred while retrieving missed words: {str(e)}"}, 500
 
+    @jwt_required_and_refresh()
+    @user_ns.expect(missed_words_model)
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def delete(self):
+        """Delete specified words from user's missed words list"""
+        try:
+            user_email = get_jwt_identity()
+            words_data = request.json
+
+            if 'words' not in words_data or not isinstance(words_data['words'], list):
+                return {"error": "Invalid input format. Expected 'words' array"}, 400
+
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get existing missed words
+            missed_words = set(json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8')))
+            
+            # Remove specified words
+            missed_words = missed_words - set(words_data['words'])
+            
+            # Convert back to list and store
+            missed_words_list = list(missed_words)
+            redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_list))
+
+            logger.info(f"Deleted specified words for user: {user_email}")
+            return {
+                "message": "Words deleted successfully",
+                "missed_words": missed_words_list
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error deleting words: {str(e)}")
+            return {"error": f"An error occurred while deleting words: {str(e)}"}, 500
+
