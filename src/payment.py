@@ -35,8 +35,18 @@ payment_ns = Namespace('payment', description='Payment operations')
 
 # Define Stripe price IDs for different plans
 STRIPE_PRICE_IDS = {
-    'Premium': 'price_1QGCidIIAqSdCVKTT7Ngfnwt',  # Replace with your actual Premium plan price ID
-    'Pro': 'price_1QGCidIIAqSdCVKTT7Ngfnwt'      # Replace with your actual Pro plan price ID
+    'Basic': {
+        'OneTime': 'price_1QLQ1uIIAqSdCVKTeFznb96J',
+        'Recurring': 'price_1QKKPbIIAqSdCVKTirwsdkhZ'
+    },
+    'Pro': {
+        'OneTime': 'price_1QLQ5eIIAqSdCVKTLUhszqnD',
+        'Recurring': 'price_1QKKRaIIAqSdCVKT95VKqeru'
+    },
+    'Premium': {
+        'OneTime': 'price_1QNqxqIIAqSdCVKTIoYfNQxq',
+        'Recurring': 'price_1QNqz4IIAqSdCVKTgjuYjaGB'
+    }
 }
 
 # Define models
@@ -83,15 +93,19 @@ class CreateCheckoutSession(Resource):
                 'duration': str(duration),
                 'isRecurring': str(isRecurring)
             }
+            if isRecurring:
+                price_key = 'Recurring'
+            else:
+                price_key = 'OneTime'
 
             # Create Stripe checkout session
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
                 line_items=[{
-                    'price': STRIPE_PRICE_IDS[plan_name],
+                    'price': STRIPE_PRICE_IDS[plan_name][price_key],
                     'quantity': 1,
                 }],
-                mode='subscription',
+                mode= 'subscription' if isRecurring else 'payment',
                 success_url=f"{STRIPE_SUCCESS_URL}?payment_session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=STRIPE_CANCEL_URL,
                 customer_email=user_email,
@@ -228,6 +242,78 @@ class VerifyPayment(Resource):
             logger.error(f"Error verifying payment session: {str(e)}")
             return {"error": "An error occurred while verifying payment session"}, 500
 
+@payment_ns.route('/cancel-subscription')
+class CancelSubscription(Resource):
+    @jwt_required_and_refresh()
+    @payment_ns.doc(
+        responses={
+            200: 'Success - Subscription cancelled',
+            400: 'Bad Request',
+            401: 'Unauthorized',
+            404: 'Subscription not found',
+            500: 'Server Error'
+        },
+        description='Cancel user\'s current subscription'
+    )
+    def post(self):
+        """Cancel user's current subscription"""
+        try:
+            user_email = get_jwt_identity()
+            user_key = f"{USER_PREFIX}{user_email}"
+            
+            # Get user data from Redis
+            user_data = redis_user_client.hgetall(user_key)
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get current plan data
+            try:
+                plan_data = json.loads(user_data.get(b'plan', b'{}').decode('utf-8'))
+            except json.JSONDecodeError:
+                plan_data = {}
+
+            if not plan_data or not plan_data.get('isRecurring'):
+                return {"error": "No active recurring subscription found"}, 404
+
+            # Find customer's subscription in Stripe
+            customers = stripe.Customer.list(email=user_email, limit=1)
+            if not customers.data:
+                return {"error": "No Stripe customer found"}, 404
+
+            customer = customers.data[0]
+            subscriptions = stripe.Subscription.list(customer=customer.id, limit=1)
+            
+            if not subscriptions.data:
+                return {"error": "No active subscription found"}, 404
+
+            subscription = subscriptions.data[0]
+
+            # Cancel the subscription at period end
+            stripe.Subscription.modify(
+                subscription.id,
+                cancel_at_period_end=True
+            )
+
+            # Update plan data in Redis to reflect cancellation
+            # expireTime should be set to original nextPaymentTime, and remove nextPaymentTime
+            plan_data['cancelledAt'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            plan_data['status'] = 'cancelled'
+            plan_data['expireTime'] = plan_data['nextPaymentTime']
+            plan_data.pop('nextPaymentTime', None)
+            redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
+
+            logger.info(f"Subscription cancelled for user: {user_email}")
+            return {
+                "message": "Subscription cancelled successfully",
+                "plan": plan_data
+            }, 200
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe error while cancelling subscription: {str(e)}")
+            return {"error": str(e)}, 400
+        except Exception as e:
+            logger.error(f"Error cancelling subscription: {str(e)}")
+            return {"error": "An error occurred while cancelling subscription"}, 500
 
 @with_retry()
 def update_user_plan(user_email, plan_name, duration, isRecurring):
@@ -236,12 +322,17 @@ def update_user_plan(user_email, plan_name, duration, isRecurring):
 
     # calculate plan expiration time
     expire_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
-
+    next_payment_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
     # create new plan data
+    # if isRecurring, do not set expireTime but set nextPaymentTime
+    # turn isRecurring to boolean
+    isRecurring = isRecurring == 'True'
     plan_data = {
         "name": plan_name,
-        "expireTime": expire_time,
-        "isRecurring": isRecurring
+        "expireTime": expire_time if not isRecurring else None,
+        "nextPaymentTime": next_payment_time if isRecurring else None,
+        "isRecurring": isRecurring,
+        "status": "active"
     }
 
     # store plan data to Redis
