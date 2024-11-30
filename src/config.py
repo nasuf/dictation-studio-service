@@ -19,6 +19,7 @@ USER_PREFIX = "user:"
 # JWT Configuration
 JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-secret-key')
 JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=120)
+JWT_REFRESH_TOKEN_EXPIRES = False
 
 USER_PLAN_DEFAULT = json.dumps({"plan": "Free"}) 
 USER_ROLE_DEFAULT = "User"

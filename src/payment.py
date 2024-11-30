@@ -1,6 +1,6 @@
 from flask import request
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import get_jwt_identity
+from flask_jwt_extended import get_jwt_identity, jwt_required
 import stripe
 import json
 import logging
@@ -15,7 +15,7 @@ from config import (
     STRIPE_CANCEL_URL,
     USER_PREFIX
 )
-from utils import jwt_required_and_refresh, with_retry
+from utils import with_retry
 from celery import shared_task
 from datetime import datetime, timedelta
 import json
@@ -60,7 +60,7 @@ redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
 
 @payment_ns.route('/create-session')
 class CreateCheckoutSession(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @payment_ns.expect(payment_model)
     @payment_ns.doc(
         responses={
@@ -199,7 +199,7 @@ class StripeWebhook(Resource):
 
 @payment_ns.route('/verify-session/<string:session_id>')
 class VerifyPayment(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @payment_ns.doc(
         responses={
             200: 'Success - Returns payment status',
@@ -244,7 +244,7 @@ class VerifyPayment(Resource):
 
 @payment_ns.route('/cancel-subscription')
 class CancelSubscription(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @payment_ns.doc(
         responses={
             200: 'Success - Subscription cancelled',

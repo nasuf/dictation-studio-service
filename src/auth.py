@@ -1,9 +1,9 @@
 from flask import jsonify, request, make_response
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import create_access_token, get_jwt_identity, get_jwt, unset_jwt_cookies
+from flask_jwt_extended import create_access_token, create_refresh_token, get_jwt_identity, get_jwt, jwt_required, unset_jwt_cookies
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
-from utils import jwt_required_and_refresh, add_token_to_blacklist
+from config import JWT_ACCESS_TOKEN_EXPIRES, JWT_REFRESH_TOKEN_EXPIRES, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
+from utils import add_token_to_blacklist
 import hashlib
 import os
 import json
@@ -134,19 +134,21 @@ class UserInfo(Resource):
             }
 
         # Create a new JWT token for the user
-        jwt_token = create_access_token(identity=data['email'], expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
+        access_token = create_access_token(identity=data['email'], expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
+        refresh_token = create_refresh_token(identity=data['email'], expires_delta=JWT_REFRESH_TOKEN_EXPIRES)
 
         # Prepare response
         response = make_response(jsonify({
             "message": "User information processed successfully",
             "user": user_info
         }), 200)
-        response.headers['x-ds-token'] = jwt_token
+        response.headers['x-ds-access-token'] = access_token
+        response.headers['x-ds-refresh-token'] = refresh_token
         return response
 
 @auth_ns.route('/logout')
 class Logout(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
         """Logout the current user"""
@@ -199,9 +201,13 @@ class Register(Resource):
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
             # Create JWT token
-            jwt_token = create_access_token(
+            access_token = create_access_token(
                 identity=email,
                 expires_delta=JWT_ACCESS_TOKEN_EXPIRES
+            )
+            refresh_token = create_refresh_token(
+                identity=email,
+                expires_delta=JWT_REFRESH_TOKEN_EXPIRES
             )
 
             # Prepare user info to return (excluding password)
@@ -213,7 +219,8 @@ class Register(Resource):
                 "user": user_info
             }
             response = make_response(jsonify(response_data), 200)
-            response.headers['x-ds-token'] = jwt_token
+            response.headers['x-ds-access-token'] = access_token
+            response.headers['x-ds-refresh-token'] = refresh_token
             return response
 
         except Exception as e:
@@ -266,9 +273,13 @@ class Login(Resource):
             redis_user_client.hmset(user_key, user_data)
 
             # Create JWT token
-            jwt_token = create_access_token(
+            access_token = create_access_token(
                 identity=email,
                 expires_delta=JWT_ACCESS_TOKEN_EXPIRES
+            )
+            refresh_token = create_refresh_token(
+                identity=email,
+                expires_delta=JWT_REFRESH_TOKEN_EXPIRES
             )
 
             # Get complete user data to return
@@ -291,12 +302,24 @@ class Login(Resource):
             }
             
             response = make_response(jsonify(response_data), 200)
-            response.headers['x-ds-token'] = jwt_token
+            response.headers['x-ds-access-token'] = access_token
+            response.headers['x-ds-refresh-token'] = refresh_token
             return response
 
         except Exception as e:
             logger.error(f"Error during login: {str(e)}")
             return {"error": f"An error occurred during login: {str(e)}"}, 500
+
+@auth_ns.route('/refresh-token')
+class TokenRefresh(Resource):
+    @jwt_required(refresh=True)
+    @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
+    def post(self):
+        current_user = get_jwt_identity()
+        new_access_token = create_access_token(identity=current_user)
+        response = make_response(jsonify({"message": "Token refreshed"}), 200)
+        response.headers['x-ds-access-token'] = new_access_token
+        return response
 
 @auth_ns.route('/check-email')
 class CheckEmail(Resource):
@@ -327,7 +350,7 @@ class CheckEmail(Resource):
         
 @auth_ns.route('/users')
 class Users(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Get all users"""
@@ -349,7 +372,7 @@ class Users(Resource):
 
 @auth_ns.route('/user/plan')
 class UserPlan(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.expect(plan_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):
@@ -429,7 +452,7 @@ class UserPlan(Resource):
 
 @auth_ns.route('/user/role')
 class UserRole(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @auth_ns.expect(role_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):

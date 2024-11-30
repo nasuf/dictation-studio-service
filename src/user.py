@@ -1,10 +1,9 @@
 from flask import request
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import get_jwt_identity
+from flask_jwt_extended import get_jwt_identity, jwt_required
 import json
 import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
-from utils import jwt_required_and_refresh
 from datetime import datetime
 from werkzeug.local import LocalProxy
 from flask import current_app
@@ -51,7 +50,7 @@ missed_words_model = user_ns.model('MissedWords', {
 
 @user_ns.route('/progress')
 class DictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.expect(dictation_progress_model)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self):
@@ -121,7 +120,7 @@ class DictationProgress(Resource):
             logger.error(f"Error updating progress and duration: {str(e)}")
             return {"error": f"An error occurred while updating progress and duration: {str(e)}"}, 500
 
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID', 'videoId': 'Video ID'}, responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's dictation progress for a specific video"""
@@ -156,7 +155,7 @@ class DictationProgress(Resource):
 
 @user_ns.route('/progress/channel')
 class ChannelDictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID'}, responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's dictation progress for all videos in a specific channel"""
@@ -190,7 +189,7 @@ class ChannelDictationProgress(Resource):
 
 @user_ns.route('/progress/<string:channel_id>')
 class ChannelDictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self, channel_id):
         """Get all dictation progress for a specific channel"""
@@ -228,7 +227,7 @@ class ChannelDictationProgress(Resource):
 
 @user_ns.route('/all')
 class AllUsers(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Get all users' information"""
@@ -259,7 +258,7 @@ class AllUsers(Resource):
 
 @user_ns.route('/all-progress')
 class AllDictationProgress(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get all dictation progress for the user with channel and video details"""
@@ -317,7 +316,7 @@ class AllDictationProgress(Resource):
 
 @user_ns.route('/duration')
 class UserDuration(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's total duration and daily durations"""
@@ -347,7 +346,7 @@ class UserDuration(Resource):
 
 @user_ns.route('/config')
 class UserConfig(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.expect(user_config_model)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def post(self):
@@ -407,7 +406,7 @@ class UserConfig(Resource):
             logger.error(f"Error updating user configuration: {str(e)}")
             return {"error": f"An error occurred while updating user configuration: {str(e)}"}, 500
 
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's configuration"""
@@ -440,7 +439,7 @@ class UserConfig(Resource):
 
 @user_ns.route('/missed-words')
 class MissedWords(Resource):
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.expect(missed_words_model)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def post(self):
@@ -478,7 +477,7 @@ class MissedWords(Resource):
             logger.error(f"Error updating missed words: {str(e)}")
             return {"error": f"An error occurred while updating missed words: {str(e)}"}, 500
 
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's missed words list"""
@@ -502,7 +501,7 @@ class MissedWords(Resource):
             logger.error(f"Error retrieving missed words: {str(e)}")
             return {"error": f"An error occurred while retrieving missed words: {str(e)}"}, 500
 
-    @jwt_required_and_refresh()
+    @jwt_required()
     @user_ns.expect(missed_words_model)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def delete(self):
