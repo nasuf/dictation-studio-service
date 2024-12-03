@@ -2,7 +2,7 @@ from flask import jsonify, request, make_response
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, create_refresh_token, get_jwt_identity, get_jwt, jwt_required, unset_jwt_cookies
 import logging
-from config import JWT_ACCESS_TOKEN_EXPIRES, JWT_REFRESH_TOKEN_EXPIRES, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
+from config import JWT_ACCESS_TOKEN_EXPIRES, JWT_REFRESH_TOKEN_EXPIRES, USER_DICTATION_CONFIG_DEFAULT, USER_LANGUAGE_DEFAULT, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
 from utils import add_token_to_blacklist
 import hashlib
 import os
@@ -106,32 +106,20 @@ class UserInfo(Resource):
             })
             user_data = redis_user_client.hgetall(user_key)
             # Parse JSON strings into objects for specific fields
-            user_info = {}
-            for k, v in user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
-                    # Try to parse JSON strings for specific fields
-                    try:
-                        # Attempt to parse each field as JSON
-                        user_info[key] = json.loads(value)
-                    except json.JSONDecodeError:
-                        # If parsing fails, keep it as a string
-                        user_info[key] = value
+            user_info = parse_user_data(user_data)
+            
         else:
             # User does not exist, create new user
-            redis_user_client.hmset(user_key, {
-                'email': data['email'],
-                'avatar': data['avatar'],
-                'username': data['username'],
-                'plan': USER_PLAN_DEFAULT,
-                'role': USER_ROLE_DEFAULT
-            })
             user_info = {
                 'email': data['email'],
                 'avatar': data['avatar'],
                 'username': data['username'],
+                'plan': USER_PLAN_DEFAULT,
+                'role': USER_ROLE_DEFAULT,
+                'dictation_config': USER_DICTATION_CONFIG_DEFAULT,
+                'language': USER_LANGUAGE_DEFAULT
             }
+            redis_user_client.hmset(user_key, user_info)
 
         # Create a new JWT token for the user
         access_token = create_access_token(identity=data['email'], expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
@@ -196,7 +184,9 @@ class Register(Resource):
                 "password": hashed_password,
                 "avatar": avatar,
                 "plan": USER_PLAN_DEFAULT,
-                "role": USER_ROLE_DEFAULT
+                "role": USER_ROLE_DEFAULT,
+                "dictation_config": USER_DICTATION_CONFIG_DEFAULT,
+                "language": USER_LANGUAGE_DEFAULT
             }
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
@@ -216,7 +206,7 @@ class Register(Resource):
             logger.info(f"User registered successfully: {email}")
             response_data = {
                 "message": "User registered successfully",
-                "user": user_info
+                "user": parse_user_data(user_info)
             }
             response = make_response(jsonify(response_data), 200)
             response.headers['x-ds-access-token'] = access_token
@@ -258,6 +248,8 @@ class Login(Resource):
                 # New user - add plan
                 user_data["plan"] = USER_PLAN_DEFAULT
                 user_data["role"] = USER_ROLE_DEFAULT
+                user_data["dictation_config"] = USER_DICTATION_CONFIG_DEFAULT
+                user_data["language"] = USER_LANGUAGE_DEFAULT
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated
@@ -284,17 +276,7 @@ class Login(Resource):
 
             # Get complete user data to return
             updated_user_data = redis_user_client.hgetall(user_key)
-            user_data = {}  
-            for k, v in updated_user_data.items():
-                if k.decode('utf-8') != 'password':
-                    key_str = k.decode('utf-8')
-                    value_str = v.decode('utf-8')
-                    try:
-                        # Attempt to parse each field as JSON
-                        user_data[key_str] = json.loads(value_str)
-                    except json.JSONDecodeError:
-                        # If parsing fails, keep it as a string
-                        user_data[key_str] = value_str
+            user_data = parse_user_data(updated_user_data)
 
             response_data = {
                 "message": "Login successful",
@@ -319,6 +301,11 @@ class TokenRefresh(Resource):
         new_access_token = create_access_token(identity=current_user)
         response = make_response(jsonify({"message": "Token refreshed"}), 200)
         response.headers['x-ds-access-token'] = new_access_token
+        # return user info in body
+        user_info = redis_user_client.hgetall(f"{USER_PREFIX}{current_user}")
+        # Get complete user data to return
+        user_data = parse_user_data(user_info)
+        response.data = json.dumps(user_data)
         return response
 
 @auth_ns.route('/check-email')
@@ -360,7 +347,7 @@ class Users(Resource):
             users = []
             for key in user_keys:
                 user_data = redis_user_client.hgetall(key)
-                user_info = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items() if k != b'password'}
+                user_info = parse_user_data(user_data)
                 users.append(user_info)
 
             logger.info(f"Retrieved {len(users)} users")
@@ -513,3 +500,17 @@ class UserRole(Resource):
             logger.error(f"Error updating user roles: {str(e)}")
             return {"error": f"An error occurred while updating user roles: {str(e)}"}, 500
 
+def parse_user_data(user_data):
+    user_info = {}
+    for k, v in user_data.items():
+        if k != b'password':
+            key = k.decode('utf-8')
+            value = v.decode('utf-8')
+            # Try to parse JSON strings for specific fields
+            try:
+                # Attempt to parse each field as JSON
+                user_info[key] = json.loads(value)
+            except json.JSONDecodeError:
+                # If parsing fails, keep it as a string
+                user_info[key] = value
+    return user_info
