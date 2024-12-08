@@ -609,7 +609,7 @@ class FullVideoTranscriptUpdate(Resource):
     @ns.expect(full_transcript_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
-        """Update the entire transcript for a video"""
+        """Update the entire transcript for a video, meanwhile copy original transcript to original_transcript"""
         try:
             data = request.json
             new_transcript = data.get('transcript')
@@ -624,6 +624,12 @@ class FullVideoTranscriptUpdate(Resource):
             if not video_data:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
+
+            # copy original transcript to original_transcript
+            # if original_transcript field is not existing, get current transcript from redis then copy to original_transcript
+            if b'original_transcript' not in video_data:
+                original_transcript = json.loads(video_data[b'transcript'].decode())
+                redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
 
             redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
             logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
@@ -720,23 +726,10 @@ class YouTubeVideoUpdate(Resource):
 @ns.route('/<string:channel_id>/<string:video_id>/restore-transcript')
 class RestoreVideoTranscript(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def post(self, channel_id, video_id):
-        """Restore transcript for a specific video from SRT file and update Redis"""
+        """Restore transcript for a specific video from original_transcript or SRT file"""
         try:
-            uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
-            filename = secure_filename(f"{video_id}.srt")
-            file_path = os.path.join(uploads_dir, filename)
-
-            if not os.path.exists(file_path):
-                logger.warning(f"SRT file not found for video {video_id}")
-                return {"error": f"SRT file not found for video {video_id}"}, 404
-
-            transcript = parse_srt_file(file_path)
-            if transcript is None:
-                logger.error(f"Unable to parse SRT file for video: {video_id}")
-                return {"error": f"Unable to parse SRT file for video: {video_id}"}, 500
-
             video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
             video_data = redis_resource_client.hgetall(video_key)
             
@@ -744,14 +737,46 @@ class RestoreVideoTranscript(Resource):
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
-            redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
+            restored = False
+            # Firstly, try to restore from original_transcript
+            if b'original_transcript' in video_data:
+                try:
+                    original_transcript = json.loads(video_data[b'original_transcript'].decode())
+                    # update transcript
+                    redis_resource_client.hset(video_key, 'transcript', json.dumps(original_transcript))
+                    # delete original_transcript field
+                    redis_resource_client.hdel(video_key, 'original_transcript')
+                    restored = True
+                    logger.info(f"Successfully restored transcript from original_transcript for video {video_id}")
+                except Exception as e:
+                    logger.error(f"Failed to restore from original_transcript: {str(e)}")
+                    # try to restore from SRT file
 
-            logger.info(f"Successfully restored transcript for video {video_id} in channel {channel_id}")
+            # if failed to restore from original_transcript, try to restore from SRT file
+            if not restored:
+                uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
+                filename = secure_filename(f"{video_id}.srt")
+                file_path = os.path.join(uploads_dir, filename)
+
+                if not os.path.exists(file_path):
+                    logger.warning(f"SRT file not found for video {video_id}")
+                    return {"error": f"SRT file not found and no original transcript available for video {video_id}"}, 404
+
+                transcript = parse_srt_file(file_path)
+                if transcript is None:
+                    logger.error(f"Unable to parse SRT file for video: {video_id}")
+                    return {"error": f"Unable to parse SRT file for video: {video_id}"}, 500
+
+                redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
+                # delete original_transcript field
+                redis_resource_client.hdel(video_key, 'original_transcript')
+                logger.info(f"Successfully restored transcript from SRT file for video {video_id}")
+
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
                 "title": video_data[b'title'].decode(),
-                "transcript": transcript
+                "transcript": json.loads(redis_resource_client.hget(video_key, 'transcript').decode())
             }, 200
 
         except Exception as e:
