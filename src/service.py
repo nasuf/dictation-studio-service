@@ -458,35 +458,18 @@ class YouTubeVideoList(Resource):
                     results.append({"error": f"Unable to parse SRT file for video: {video_link}"})
                     continue
 
-                video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-                existing_videos = redis_resource_client.hget(video_list_key, 'videos')
-                if existing_videos:
-                    existing_videos = json.loads(existing_videos.decode())
-                else:
-                    existing_videos = []
-
-                new_video = {
+                video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+                video_info = {
                     "link": video_link,
                     "video_id": video_id,
                     "title": title,
-                    "transcript": transcript
+                    "transcript": json.dumps(transcript)
                 }
-
-                # Update existing video or add new one
-                updated = False
-                for i, video in enumerate(existing_videos):
-                    if video['video_id'] == video_id:
-                        existing_videos[i] = new_video
-                        updated = True
-                        break
-                if not updated:
-                    existing_videos.append(new_video)
-
-                redis_resource_client.hset(video_list_key, 'videos', json.dumps(existing_videos))
-                redis_resource_client.hset(video_list_key, 'channel_id', channel_id)
+                redis_resource_client.hmset(video_key, video_info)
 
                 logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
+
             return {"results": results}, 200
         except Exception as e:
             logger.error(f"Error saving video list: {str(e)}")
@@ -497,17 +480,36 @@ class YouTubeVideoList(Resource):
     def get(self):
         """Get all YouTube video lists with transcripts from Redis"""
         try:
-            video_lists = []
-            for key in redis_resource_client.scan_iter(f"{VIDEO_PREFIX}*"):
-                video_list_data = redis_resource_client.hgetall(key)
-                videos = json.loads(video_list_data[b'videos'].decode())
-                channel_id = video_list_data[b'channel_id'].decode()
-                video_lists.append({
+            video_lists = {}
+            pattern = f"{VIDEO_PREFIX}*"
+            for key in redis_resource_client.scan_iter(pattern):
+                key_str = key.decode('utf-8')
+                channel_id = key_str.split(':')[1]  # video:channel_id:video_id
+                video_data = redis_resource_client.hgetall(key)
+                
+                if not video_data:
+                    continue
+
+                video_info = {
+                    'link': video_data[b'link'].decode(),
+                    'video_id': video_data[b'video_id'].decode(),
+                    'title': video_data[b'title'].decode(),
+                    'transcript': json.loads(video_data[b'transcript'].decode())
+                }
+
+                if channel_id not in video_lists:
+                    video_lists[channel_id] = []
+                video_lists[channel_id].append(video_info)
+
+            result = []
+            for channel_id, videos in video_lists.items():
+                result.append({
                     "channel_id": channel_id,
                     "videos": videos
                 })
-            logger.info(f"Retrieved video lists for {len(video_lists)} channels")
-            return video_lists, 200
+
+            logger.info(f"Retrieved video lists for {len(result)} channels")
+            return result, 200
         except Exception as e:
             logger.error(f"Error retrieving video lists: {str(e)}")
             return {"error": f"Error retrieving video lists with transcripts: {str(e)}"}, 500
@@ -519,23 +521,21 @@ class YouTubeVideoListByChannel(Resource):
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
         try:
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_resource_client.hget(video_list_key, 'videos')
-            if not video_data:
-                logger.info(f"No videos found for channel: {channel_id}")
-                return {"channel_id": channel_id, "videos": []}, 200
+            pattern = f"{VIDEO_PREFIX}{channel_id}:*"
+            videos = []
             
-            videos = json.loads(video_data.decode())
-            simplified_videos = []
-            for video in videos:
-                simplified_videos.append({
-                    "video_id": video["video_id"],
-                    "link": video["link"],
-                    "title": video["title"]
-                })
+            for key in redis_resource_client.scan_iter(pattern):
+                video_data = redis_resource_client.hgetall(key)
+                if video_data:
+                    videos.append({
+                        "video_id": video_data[b'video_id'].decode(),
+                        "link": video_data[b'link'].decode(),
+                        "title": video_data[b'title'].decode()
+                    })
             
-            logger.info(f"Retrieved {len(simplified_videos)} videos for channel: {channel_id}")
-            return {"channel_id": channel_id, "videos": simplified_videos}, 200
+            logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
+            return {"channel_id": channel_id, "videos": videos}, 200
+            
         except Exception as e:
             logger.error(f"Error retrieving video list for channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving video list: {str(e)}"}, 500
@@ -547,25 +547,21 @@ class VideoTranscript(Resource):
     def get(self, channel_id, video_id):
         """Get transcript for a specific video in a channel"""
         try:
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_resource_client.hget(video_list_key, 'videos')
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(video_key)
+            
             if not video_data:
-                logger.warning(f"Channel not found: {channel_id}")
-                return {"error": "Channel not found"}, 404
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": "Video not found"}, 404
             
-            videos = json.loads(video_data.decode())
-            for video in videos:
-                if video["video_id"] == video_id:
-                    logger.info(f"Retrieved transcript for video {video_id} in channel {channel_id}")
-                    return {
-                        "channel_id": channel_id,
-                        "video_id": video_id,
-                        "title": video["title"],
-                        "transcript": video["transcript"]
-                    }, 200
-            
-            logger.warning(f"Video {video_id} not found in channel {channel_id}")
-            return {"error": "Video not found in the channel"}, 404
+            logger.info(f"Retrieved transcript for video {video_id} in channel {channel_id}")
+            return {
+                "channel_id": channel_id,
+                "video_id": video_id,
+                "title": video_data[b'title'].decode(),
+                "transcript": json.loads(video_data[b'transcript'].decode())
+            }, 200
+
         except Exception as e:
             logger.error(f"Error retrieving transcript for video {video_id} in channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving video transcript: {str(e)}"}, 500
@@ -586,29 +582,22 @@ class VideoTranscriptUpdate(Resource):
                 'transcript': data.get('transcript')
             }
 
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_resource_client.hget(video_list_key, 'videos')
-            if video_data is None:
-                logger.warning(f"Channel not found: {channel_id}")
-                return {"error": "Channel not found"}, 404
-
-            videos = json.loads(video_data.decode())
-            video_found = False
-            for video in videos:
-                if video["video_id"] == video_id:
-                    video_found = True
-                    if 0 <= index < len(video["transcript"]):
-                        video["transcript"][index] = transcript_item
-                        redis_resource_client.hset(video_list_key, 'videos', json.dumps(videos))
-                        logger.info(f"Updated transcript item {index} for video {video_id} in channel {channel_id}")
-                        return {"message": "Transcript item updated successfully"}, 200
-                    else:
-                        logger.warning(f"Invalid transcript index: {index}")
-                        return {"error": "Invalid transcript index"}, 400
-
-            if not video_found:
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(video_key)
+            
+            if not video_data:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found in the channel"}, 404
+                return {"error": "Video not found"}, 404
+
+            transcript = json.loads(video_data[b'transcript'].decode())
+            if 0 <= index < len(transcript):
+                transcript[index] = transcript_item
+                redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
+                logger.info(f"Updated transcript item {index} for video {video_id} in channel {channel_id}")
+                return {"message": "Transcript item updated successfully"}, 200
+            else:
+                logger.warning(f"Invalid transcript index: {index}")
+                return {"error": "Invalid transcript index"}, 400
 
         except Exception as e:
             logger.error(f"Error updating transcript: {str(e)}")
@@ -629,25 +618,16 @@ class FullVideoTranscriptUpdate(Resource):
                 logger.warning("No transcript data provided")
                 return {"error": "Transcript data is required"}, 400
 
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            video_data = redis_resource_client.hget(video_list_key, 'videos')
-            if video_data is None:
-                logger.warning(f"Channel not found: {channel_id}")
-                return {"error": "Channel not found"}, 404
-
-            videos = json.loads(video_data.decode())
-            video_found = False
-            for video in videos:
-                if video["video_id"] == video_id:
-                    video_found = True
-                    video["transcript"] = new_transcript
-                    redis_resource_client.hset(video_list_key, 'videos', json.dumps(videos))
-                    logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
-                    return {"message": "Full transcript updated successfully"}, 200
-
-            if not video_found:
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(video_key)
+            
+            if not video_data:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found in the channel"}, 404
+                return {"error": "Video not found"}, 404
+
+            redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
+            logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
+            return {"message": "Full transcript updated successfully"}, 200
 
         except Exception as e:
             logger.error(f"Error updating full transcript: {str(e)}")
@@ -660,26 +640,13 @@ class YouTubeVideoDelete(Resource):
     def delete(self, channel_id, video_id):
         """Delete a specific video from a channel and remove related user progress"""
         try:
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            videos_data = redis_resource_client.hget(video_list_key, 'videos')
-            
-            if videos_data is None:
-                logger.warning(f"Channel not found: {channel_id}")
-                return {"error": "Channel not found"}, 404
-
-            videos = json.loads(videos_data.decode())
-            
-            # Find and remove the video
-            updated_videos = [video for video in videos if video['video_id'] != video_id]
-            
-            if len(videos) == len(updated_videos):
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            if not redis_resource_client.exists(video_key):
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found in the channel"}, 404
+                return {"error": "Video not found"}, 404
 
-            # Update Redis with the new video list
-            redis_resource_client.hset(video_list_key, 'videos', json.dumps(updated_videos))
+            redis_resource_client.delete(video_key)
 
-            # Remove dictation progress for all users
             for user_key in redis_user_client.scan_iter("user:*"):
                 user_data = redis_user_client.hgetall(user_key)
                 if b'dictation_progress' in user_data:
@@ -690,8 +657,8 @@ class YouTubeVideoDelete(Resource):
                         redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
                         logger.info(f"Removed dictation progress for video {video_id} from user {user_key.decode('utf-8')}")
 
-            logger.info(f"Successfully deleted video {video_id} from channel {channel_id} and removed related user progress")
-            return {"message": f"Video {video_id} deleted successfully from channel {channel_id} and related user progress removed"}, 200
+            logger.info(f"Successfully deleted video {video_id} from channel {channel_id}")
+            return {"message": f"Video {video_id} deleted successfully from channel {channel_id}"}, 200
 
         except Exception as e:
             logger.error(f"Error deleting video {video_id} from channel {channel_id}: {str(e)}")
@@ -721,36 +688,33 @@ class YouTubeVideoUpdate(Resource):
                 logger.warning(f"Invalid YouTube URL: {new_link}")
                 return {"error": f"Invalid YouTube URL: {new_link}"}, 400
 
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            videos_data = redis_resource_client.hget(video_list_key, 'videos')
+            old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(old_video_key)
             
-            if videos_data is None:
-                logger.warning(f"Channel not found: {channel_id}")
-                return {"error": "Channel not found"}, 404
-
-            videos = json.loads(videos_data.decode())
-            
-            video_found = False
-            for video in videos:
-                if video['video_id'] == video_id:
-                    video_found = True
-                    video['link'] = new_link
-                    video['video_id'] = new_video_id
-                    video['title'] = new_title
-                    break
-            
-            if not video_found:
+            if not video_data:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found in the channel"}, 404
+                return {"error": "Video not found"}, 404
 
-            # Update Redis with the modified video list
-            redis_resource_client.hset(video_list_key, 'videos', json.dumps(videos))
+            if new_video_id != video_id:
+                new_video_key = f"{VIDEO_PREFIX}{channel_id}:{new_video_id}"
+                redis_resource_client.hmset(new_video_key, {
+                    'link': new_link,
+                    'video_id': new_video_id,
+                    'title': new_title,
+                    'transcript': video_data[b'transcript'].decode()
+                })
+                redis_resource_client.delete(old_video_key)
+            else:
+                redis_resource_client.hmset(old_video_key, {
+                    'link': new_link,
+                    'title': new_title
+                })
 
             logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
-            return {"message": f"Video {video_id} updated successfully in channel {channel_id}"}, 200
+            return {"message": f"Video {video_id} updated successfully"}, 200
 
         except Exception as e:
-            logger.error(f"Error updating video {video_id} in channel {channel_id}: {str(e)}")
+            logger.error(f"Error updating video: {str(e)}")
             return {"error": f"Error updating video: {str(e)}"}, 500
 
 @ns.route('/<string:channel_id>/<string:video_id>/restore-transcript')
@@ -760,57 +724,38 @@ class RestoreVideoTranscript(Resource):
     def post(self, channel_id, video_id):
         """Restore transcript for a specific video from SRT file and update Redis"""
         try:
-            # Construct the file path
             uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
             filename = secure_filename(f"{video_id}.srt")
             file_path = os.path.join(uploads_dir, filename)
 
-            # Check if the file exists
             if not os.path.exists(file_path):
                 logger.warning(f"SRT file not found for video {video_id}")
                 return {"error": f"SRT file not found for video {video_id}"}, 404
 
-            # Parse the SRT file
             transcript = parse_srt_file(file_path)
             if transcript is None:
                 logger.error(f"Unable to parse SRT file for video: {video_id}")
                 return {"error": f"Unable to parse SRT file for video: {video_id}"}, 500
 
-            # Update Redis
-            video_list_key = f"{VIDEO_PREFIX}{channel_id}"
-            existing_videos = redis_resource_client.hget(video_list_key, 'videos')
-            if existing_videos:
-                existing_videos = json.loads(existing_videos.decode())
-            else:
-                existing_videos = []
-
-            # Find and update the video entry
-            updated = False
-            for video in existing_videos:
-                if video['video_id'] == video_id:
-                    video['transcript'] = transcript
-                    updated = True
-                    break
-
-            if not updated:
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(video_key)
+            
+            if not video_data:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": f"Video {video_id} not found in channel {channel_id}"}, 404
+                return {"error": "Video not found"}, 404
 
-            # Save updated video list back to Redis
-            redis_resource_client.hset(video_list_key, 'videos', json.dumps(existing_videos))
+            redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
 
             logger.info(f"Successfully restored transcript for video {video_id} in channel {channel_id}")
-
-            # Return the transcript in the same format as the video-transcript API
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
-                "title": video["title"],
+                "title": video_data[b'title'].decode(),
                 "transcript": transcript
             }, 200
 
         except Exception as e:
-            logger.error(f"Error restoring transcript for video {video_id} in channel {channel_id}: {str(e)}")
+            logger.error(f"Error restoring transcript: {str(e)}")
             return {"error": f"Error restoring transcript: {str(e)}"}, 500
 
 # Add user namespace to API
