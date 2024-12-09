@@ -16,6 +16,7 @@ from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 import yt_dlp as youtube_dl
 from werkzeug.utils import secure_filename
 from auth import auth_ns
+from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
 
@@ -38,11 +39,18 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
 app.config['JWT_TOKEN_LOCATION'] = ['headers']  # Only allow JWT tokens in headers
 jwt = JWTManager(app)
 
-
-api = Api(app, version='1.0', title='Dictation Studio API',
-          description='API for Dictation Studio')
+api = Api(
+    app, 
+    version='1.0', 
+    title='Dictation Studio API', 
+    description='API for Dictation Studio'
+)
+register_error_handlers(api)
 
 ns = api.namespace('service', path='/dictation-studio/service', description='Dictation Studio Service Operations')
+api.add_namespace(auth_ns, path='/dictation-studio/auth')
+api.add_namespace(user_ns, path='/dictation-studio/user')
+api.add_namespace(payment_ns, path='/dictation-studio/payment')
 
 # Redis connection
 redis_resource_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB, password=REDIS_PASSWORD)
@@ -258,7 +266,7 @@ def convert_time_to_seconds(time_str):
     seconds, milliseconds = rest.split(',')
     total_seconds = int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
     return round(total_seconds, 2)
-   
+
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @jwt_required()
@@ -784,9 +792,5 @@ class RestoreVideoTranscript(Resource):
             return {"error": f"Error restoring transcript: {str(e)}"}, 500
 
 # Add user namespace to API
-api.add_namespace(auth_ns, path='/dictation-studio/auth')
-api.add_namespace(user_ns, path='/dictation-studio/user')
-api.add_namespace(payment_ns, path='/dictation-studio/payment')
-
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=4001)
