@@ -525,6 +525,7 @@ class YouTubeVideoList(Resource):
 
 @ns.route('/video-list/<string:channel_id>')
 class YouTubeVideoListByChannel(Resource):
+    @jwt_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
@@ -538,7 +539,8 @@ class YouTubeVideoListByChannel(Resource):
                     videos.append({
                         "video_id": video_data[b'video_id'].decode(),
                         "link": video_data[b'link'].decode(),
-                        "title": video_data[b'title'].decode()
+                        "title": video_data[b'title'].decode(),
+                        'transcript': json.loads(video_data[b'transcript'].decode())
                     })
             
             logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
