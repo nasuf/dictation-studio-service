@@ -25,8 +25,12 @@ from threading import Lock
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Create a cache for channel data with a max size of 1000
-channel_cache = LRUCache(maxsize=1000)  # Adjust the size as needed
+channel_cache = LRUCache(maxsize=1000)
 cache_lock = Lock()  
+
+# Create video cache
+video_cache = LRUCache(maxsize=1000)
+video_cache_lock = Lock()
 
 def load_cookies():
     cookie_file = os.path.join(os.path.dirname(__file__), 'youtube.com_cookies.txt')
@@ -299,6 +303,43 @@ def update_channel_cache(channel_id, channel_data):
         logger.info(f"Updating cache for channel {channel_id}")
         channel_cache[channel_id] = channel_data
 
+def get_video_from_cache_or_redis(channel_id, video_id, redis_client):
+    """Get video data from cache or Redis"""
+    cache_key = f"{channel_id}:{video_id}"
+    with video_cache_lock:
+        if cache_key in video_cache:
+            logger.info(f"Cache hit for video {cache_key}")
+            return video_cache[cache_key]
+        
+        # If not in cache, get from Redis
+        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+        video_data = redis_client.hgetall(video_key)
+        
+        if video_data:
+            # Convert bytes to string
+            video_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in video_data.items()}
+            if 'transcript' in video_data:
+                video_data['transcript'] = json.loads(video_data['transcript'])
+            # Store in cache
+            video_cache[cache_key] = video_data
+            logger.info(f"Cache miss for video {cache_key}, stored in cache")
+            return video_data
+        return None
+
+def update_video_cache(channel_id, video_id, video_data):
+    """Update video cache"""
+    cache_key = f"{channel_id}:{video_id}"
+    with video_cache_lock:
+        logger.info(f"Updating cache for video {cache_key}")
+        video_cache[cache_key] = video_data
+
+def remove_video_from_cache(channel_id, video_id):
+    """Remove video from cache"""
+    cache_key = f"{channel_id}:{video_id}"
+    with video_cache_lock:
+        logger.info(f"Removing video {cache_key} from cache")
+        video_cache.pop(cache_key, None)
+
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @jwt_required()
@@ -519,6 +560,10 @@ class YouTubeVideoList(Resource):
                 }
                 redis_resource_client.hmset(video_key, video_info)
 
+                # Add to cache
+                video_info['transcript'] = transcript  # Use parsed transcript instead of JSON string
+                update_video_cache(channel_id, video_id, video_info)
+
                 logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
 
@@ -536,23 +581,15 @@ class YouTubeVideoList(Resource):
             pattern = f"{VIDEO_PREFIX}*"
             for key in redis_resource_client.scan_iter(pattern):
                 key_str = key.decode('utf-8')
-                channel_id = key_str.split(':')[1]  # video:channel_id:video_id
-                video_data = redis_resource_client.hgetall(key)
+                channel_id = key_str.split(':')[1]
+                video_id = key_str.split(':')[2]
                 
-                if not video_data:
-                    continue
-
-                video_info = {
-                    'link': video_data[b'link'].decode(),
-                    'video_id': video_data[b'video_id'].decode(),
-                    'title': video_data[b'title'].decode(),
-                    'transcript': json.loads(video_data[b'transcript'].decode())
-                }
-
-                if channel_id not in video_lists:
-                    video_lists[channel_id] = []
-                video_lists[channel_id].append(video_info)
-
+                video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+                if video_info:
+                    if channel_id not in video_lists:
+                        video_lists[channel_id] = []
+                    video_lists[channel_id].append(video_info)
+            
             result = []
             for channel_id, videos in video_lists.items():
                 result.append({
@@ -570,22 +607,16 @@ class YouTubeVideoList(Resource):
 @ns.route('/video-list/<string:channel_id>')
 class YouTubeVideoListByChannel(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def get(self, channel_id):
-        """Get video IDs and links for a specific channel"""
         try:
             pattern = f"{VIDEO_PREFIX}{channel_id}:*"
             videos = []
             
             for key in redis_resource_client.scan_iter(pattern):
-                video_data = redis_resource_client.hgetall(key)
-                if video_data:
-                    videos.append({
-                        "video_id": video_data[b'video_id'].decode(),
-                        "link": video_data[b'link'].decode(),
-                        "title": video_data[b'title'].decode(),
-                        'transcript': json.loads(video_data[b'transcript'].decode())
-                    })
+                video_id = key.decode().split(':')[-1]
+                video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+                if video_info:
+                    videos.append(video_info)
             
             logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
             return {"channel_id": channel_id, "videos": videos}, 200
@@ -597,14 +628,10 @@ class YouTubeVideoListByChannel(Resource):
 @ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
 class VideoTranscript(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def get(self, channel_id, video_id):
-        """Get transcript for a specific video in a channel"""
         try:
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            video_data = redis_resource_client.hgetall(video_key)
-            
-            if not video_data:
+            video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_info:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
             
@@ -612,12 +639,12 @@ class VideoTranscript(Resource):
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
-                "title": video_data[b'title'].decode(),
-                "transcript": json.loads(video_data[b'transcript'].decode())
+                "title": video_info['title'],
+                "transcript": video_info['transcript']
             }, 200
 
         except Exception as e:
-            logger.error(f"Error retrieving transcript for video {video_id} in channel {channel_id}: {str(e)}")
+            logger.error(f"Error retrieving transcript: {str(e)}")
             return {"error": f"Error retrieving video transcript: {str(e)}"}, 500
 
 @ns.route('/<string:channel_id>/<string:video_id>/transcript')
@@ -629,29 +656,28 @@ class VideoTranscriptUpdate(Resource):
         """Update a specific transcript item for a video"""
         try:
             data = request.json
+            video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_info:
+                return {"error": "Video not found"}, 404
+
+            transcript = video_info['transcript']
             index = data.get('index')
             transcript_item = {
                 'start': data.get('start'),
                 'end': data.get('end'),
                 'transcript': data.get('transcript')
             }
+            transcript[index] = transcript_item
 
             video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            video_data = redis_resource_client.hgetall(video_key)
-            
-            if not video_data:
-                logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found"}, 404
+            video_info['transcript'] = transcript
+            redis_data = video_info.copy()
+            redis_data['transcript'] = json.dumps(transcript)
+            redis_resource_client.hmset(video_key, redis_data)
 
-            transcript = json.loads(video_data[b'transcript'].decode())
-            if 0 <= index < len(transcript):
-                transcript[index] = transcript_item
-                redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
-                logger.info(f"Updated transcript item {index} for video {video_id} in channel {channel_id}")
-                return {"message": "Transcript item updated successfully"}, 200
-            else:
-                logger.warning(f"Invalid transcript index: {index}")
-                return {"error": "Invalid transcript index"}, 400
+            update_video_cache(channel_id, video_id, video_info)
+
+            return {"message": "Transcript updated successfully"}, 200
 
         except Exception as e:
             logger.error(f"Error updating transcript: {str(e)}")
@@ -672,20 +698,24 @@ class FullVideoTranscriptUpdate(Resource):
                 logger.warning("No transcript data provided")
                 return {"error": "Transcript data is required"}, 400
 
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            video_data = redis_resource_client.hgetall(video_key)
-            
-            if not video_data:
+            video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_info:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
-            # copy original transcript to original_transcript
-            # if original_transcript field is not existing, get current transcript from redis then copy to original_transcript
-            if b'original_transcript' not in video_data:
-                original_transcript = json.loads(video_data[b'transcript'].decode())
-                redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            
+            # Copy original transcript if not exists
+            if 'original_transcript' not in video_info:
+                original_transcript = video_info['transcript']
+                redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))
+                video_info['original_transcript'] = original_transcript
 
+            # Update transcript in Redis and cache
+            video_info['transcript'] = new_transcript
             redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
+            update_video_cache(channel_id, video_id, video_info)
+
             logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
             return {"message": "Full transcript updated successfully"}, 200
 
@@ -696,16 +726,16 @@ class FullVideoTranscriptUpdate(Resource):
 @ns.route('/video-list/<string:channel_id>/<string:video_id>')
 class YouTubeVideoDelete(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def delete(self, channel_id, video_id):
-        """Delete a specific video from a channel and remove related user progress"""
         try:
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            if not redis_resource_client.exists(video_key):
+            video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_info:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
             redis_resource_client.delete(video_key)
+            remove_video_from_cache(channel_id, video_id)
 
             for user_key in redis_user_client.scan_iter("user:*"):
                 user_data = redis_user_client.hgetall(user_key)
@@ -748,27 +778,36 @@ class YouTubeVideoUpdate(Resource):
                 logger.warning(f"Invalid YouTube URL: {new_link}")
                 return {"error": f"Invalid YouTube URL: {new_link}"}, 400
 
-            old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            video_data = redis_resource_client.hgetall(old_video_key)
-            
-            if not video_data:
+            video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_info:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
             if new_video_id != video_id:
+                # Create new video entry
                 new_video_key = f"{VIDEO_PREFIX}{channel_id}:{new_video_id}"
-                redis_resource_client.hmset(new_video_key, {
+                new_video_info = {
                     'link': new_link,
                     'video_id': new_video_id,
                     'title': new_title,
-                    'transcript': video_data[b'transcript'].decode()
-                })
+                    'transcript': video_info['transcript']
+                }
+                redis_resource_client.hmset(new_video_key, new_video_info.copy())
+                update_video_cache(channel_id, new_video_id, new_video_info)
+
+                # Delete old video
+                old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
                 redis_resource_client.delete(old_video_key)
+                remove_video_from_cache(channel_id, video_id)
             else:
-                redis_resource_client.hmset(old_video_key, {
+                # Update existing video
+                video_info.update({
                     'link': new_link,
                     'title': new_title
                 })
+                old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+                redis_resource_client.hmset(old_video_key, video_info)
+                update_video_cache(channel_id, video_id, video_info)
 
             logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
             return {"message": f"Video {video_id} updated successfully"}, 200
@@ -784,29 +823,29 @@ class RestoreVideoTranscript(Resource):
     def post(self, channel_id, video_id):
         """Restore transcript for a specific video from original_transcript or SRT file"""
         try:
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            video_data = redis_resource_client.hgetall(video_key)
-            
-            if not video_data:
+            video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_info:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
             restored = False
-            # Firstly, try to restore from original_transcript
-            if b'original_transcript' in video_data:
+
+            # Try to restore from original_transcript
+            if 'original_transcript' in video_info:
                 try:
-                    original_transcript = json.loads(video_data[b'original_transcript'].decode())
-                    # update transcript
+                    original_transcript = video_info['original_transcript']
+                    video_info['transcript'] = original_transcript
                     redis_resource_client.hset(video_key, 'transcript', json.dumps(original_transcript))
-                    # delete original_transcript field
                     redis_resource_client.hdel(video_key, 'original_transcript')
+                    del video_info['original_transcript']
+                    update_video_cache(channel_id, video_id, video_info)
                     restored = True
                     logger.info(f"Successfully restored transcript from original_transcript for video {video_id}")
                 except Exception as e:
                     logger.error(f"Failed to restore from original_transcript: {str(e)}")
-                    # try to restore from SRT file
 
-            # if failed to restore from original_transcript, try to restore from SRT file
+            # If failed to restore from original_transcript, try SRT file
             if not restored:
                 uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
                 filename = secure_filename(f"{video_id}.srt")
@@ -821,16 +860,19 @@ class RestoreVideoTranscript(Resource):
                     logger.error(f"Unable to parse SRT file for video: {video_id}")
                     return {"error": f"Unable to parse SRT file for video: {video_id}"}, 500
 
+                video_info['transcript'] = transcript
                 redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
-                # delete original_transcript field
                 redis_resource_client.hdel(video_key, 'original_transcript')
+                if 'original_transcript' in video_info:
+                    del video_info['original_transcript']
+                update_video_cache(channel_id, video_id, video_info)
                 logger.info(f"Successfully restored transcript from SRT file for video {video_id}")
 
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
-                "title": video_data[b'title'].decode(),
-                "transcript": json.loads(redis_resource_client.hget(video_key, 'transcript').decode())
+                "title": video_info['title'],
+                "transcript": video_info['transcript']
             }, 200
 
         except Exception as e:
