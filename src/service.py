@@ -335,12 +335,13 @@ class YouTubeChannel(Resource):
     def get(self):
         """Get all YouTube channel information from Redis"""
         try:
+            ignore_visibility = request.args.get('ignore_visibility', 'false')
             all_channels = []
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
                 channel_info = redis_resource_client.hgetall(key)
                 channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
                 # if visibility is not public, skip
-                if channel_data.get('visibility') != 'public':
+                if ignore_visibility == 'false' and channel_data.get('visibility') != 'public':
                     continue
                 all_channels.append(channel_data)
             
