@@ -1,4 +1,4 @@
-name: Deploy Flask Application to VPS
+name: Deploy Dictation Studio Service Application to VPS
 
 on:
   push:
