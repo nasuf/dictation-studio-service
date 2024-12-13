@@ -19,8 +19,14 @@ from auth import auth_ns
 from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
+from cachetools import LRUCache
+from threading import Lock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Create a cache for channel data with a max size of 1000
+channel_cache = LRUCache(maxsize=1000)  # Adjust the size as needed
+cache_lock = Lock()  
 
 def load_cookies():
     cookie_file = os.path.join(os.path.dirname(__file__), 'youtube.com_cookies.txt')
@@ -267,6 +273,32 @@ def convert_time_to_seconds(time_str):
     total_seconds = int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
     return round(total_seconds, 2)
 
+def get_channel_from_cache_or_redis(channel_id, redis_client):
+    """Get channel data from cache or Redis"""
+    with cache_lock:
+        if channel_id in channel_cache:
+            logger.info(f"Cache hit for channel {channel_id}")
+            return channel_cache[channel_id]
+        
+        # If not in cache, get from Redis
+        channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+        channel_data = redis_client.hgetall(channel_key)
+        
+        if channel_data:
+            # Convert bytes to string
+            channel_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in channel_data.items()}
+            # Store in cache
+            channel_cache[channel_id] = channel_data
+            logger.info(f"Cache miss for channel {channel_id}, stored in cache")
+            return channel_data
+        return None
+
+def update_channel_cache(channel_id, channel_data):
+    """Update channel cache"""
+    with cache_lock:
+        logger.info(f"Updating cache for channel {channel_id}")
+        channel_cache[channel_id] = channel_data
+
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @jwt_required()
@@ -323,6 +355,8 @@ class YouTubeChannel(Resource):
                     'visibility': channel_visibility
                 }
                 redis_resource_client.hmset(channel_key, channel_info)
+                # Update cache after saving to Redis
+                update_channel_cache(channel_id, channel_info)
                 logger.info(f"Saved/updated channel: {channel_id}")
             
             logger.info(f"Successfully saved/updated {len(channels)} channel(s)")
@@ -337,13 +371,18 @@ class YouTubeChannel(Resource):
         try:
             ignore_visibility = request.args.get('ignore_visibility', 'false')
             all_channels = []
+            
+            # Get all channel keys
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
-                channel_info = redis_resource_client.hgetall(key)
-                channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
-                # if visibility is not public, skip
-                if ignore_visibility == 'false' and channel_data.get('visibility') != 'public':
-                    continue
-                all_channels.append(channel_data)
+                channel_id = key.decode().replace(CHANNEL_PREFIX, '')
+                # Try to get channel from cache first
+                channel_data = get_channel_from_cache_or_redis(channel_id, redis_resource_client)
+                
+                if channel_data:
+                    # Check visibility as per original logic
+                    if ignore_visibility == 'false' and channel_data.get('visibility') != 'public':
+                        continue
+                    all_channels.append(channel_data)
             
             logger.info(f"Retrieved {len(all_channels)} channels from Redis")
             return all_channels, 200
@@ -380,8 +419,12 @@ class YouTubeChannelOperations(Resource):
             if 'visibility' in data:
                 channel_info[b'visibility'] = data['visibility'].encode()
             
-            # Save updated channel info
+            # Save updated channel info to Redis
             redis_resource_client.hmset(channel_key, channel_info)
+            
+            # Update cache with decoded data
+            channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
+            update_channel_cache(channel_id, channel_data)
             
             logger.info(f"Successfully updated channel: {channel_id}")
             return {"message": f"Channel {channel_id} updated successfully"}, 200
@@ -394,14 +437,11 @@ class YouTubeChannelOperations(Resource):
     def get(self, channel_id):
         """Get a specific YouTube channel information from Redis"""
         try:
-            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-            
-            if not redis_resource_client.exists(channel_key):
+            # Try to get channel from cache first
+            channel_data = get_channel_from_cache_or_redis(channel_id, redis_resource_client)
+            if not channel_data:
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
-            
-            channel_info = redis_resource_client.hgetall(channel_key)
-            channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
             
             logger.info(f"Retrieved channel information for: {channel_id}")
             return channel_data, 200
