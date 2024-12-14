@@ -10,6 +10,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import redis
 import requests
 from bs4 import BeautifulSoup
+from cache import get_channel_from_cache_or_redis, get_video_from_cache_or_redis, remove_video_from_cache, update_channel_cache, update_video_cache
 from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX, REDIS_PASSWORD
 from flask_jwt_extended import JWTManager, jwt_required
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
@@ -20,17 +21,8 @@ from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
 from cachetools import LRUCache
-from threading import Lock
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Create a cache for channel data with a max size of 1000
-channel_cache = LRUCache(maxsize=1000)
-cache_lock = Lock()  
-
-# Create video cache
-video_cache = LRUCache(maxsize=1000)
-video_cache_lock = Lock()
 
 def load_cookies():
     cookie_file = os.path.join(os.path.dirname(__file__), 'youtube.com_cookies.txt')
@@ -276,69 +268,6 @@ def convert_time_to_seconds(time_str):
     seconds, milliseconds = rest.split(',')
     total_seconds = int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
     return round(total_seconds, 2)
-
-def get_channel_from_cache_or_redis(channel_id, redis_client):
-    """Get channel data from cache or Redis"""
-    with cache_lock:
-        if channel_id in channel_cache:
-            logger.info(f"Cache hit for channel {channel_id}")
-            return channel_cache[channel_id]
-        
-        # If not in cache, get from Redis
-        channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-        channel_data = redis_client.hgetall(channel_key)
-        
-        if channel_data:
-            # Convert bytes to string
-            channel_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in channel_data.items()}
-            # Store in cache
-            channel_cache[channel_id] = channel_data
-            logger.info(f"Cache miss for channel {channel_id}, stored in cache")
-            return channel_data
-        return None
-
-def update_channel_cache(channel_id, channel_data):
-    """Update channel cache"""
-    with cache_lock:
-        logger.info(f"Updating cache for channel {channel_id}")
-        channel_cache[channel_id] = channel_data
-
-def get_video_from_cache_or_redis(channel_id, video_id, redis_client):
-    """Get video data from cache or Redis"""
-    cache_key = f"{channel_id}:{video_id}"
-    with video_cache_lock:
-        if cache_key in video_cache:
-            logger.info(f"Cache hit for video {cache_key}")
-            return video_cache[cache_key]
-        
-        # If not in cache, get from Redis
-        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-        video_data = redis_client.hgetall(video_key)
-        
-        if video_data:
-            # Convert bytes to string
-            video_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in video_data.items()}
-            if 'transcript' in video_data:
-                video_data['transcript'] = json.loads(video_data['transcript'])
-            # Store in cache
-            video_cache[cache_key] = video_data
-            logger.info(f"Cache miss for video {cache_key}, stored in cache")
-            return video_data
-        return None
-
-def update_video_cache(channel_id, video_id, video_data):
-    """Update video cache"""
-    cache_key = f"{channel_id}:{video_id}"
-    with video_cache_lock:
-        logger.info(f"Updating cache for video {cache_key}")
-        video_cache[cache_key] = video_data
-
-def remove_video_from_cache(channel_id, video_id):
-    """Remove video from cache"""
-    cache_key = f"{channel_id}:{video_id}"
-    with video_cache_lock:
-        logger.info(f"Removing video {cache_key} from cache")
-        video_cache.pop(cache_key, None)
 
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
