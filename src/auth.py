@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timedelta
 from flask import current_app
 from werkzeug.local import LocalProxy
+from cache import get_user_from_cache_or_redis, update_user_cache, remove_user_from_cache
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -85,6 +86,23 @@ def verify_password(stored_password, provided_password):
     new_key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
     return new_key == stored_key
 
+def _prepare_redis_data(data):
+    """Helper function to prepare data for Redis storage
+    
+    Args:
+        data (dict): Original data dictionary
+        
+    Returns:
+        dict: Data with all values properly encoded for Redis
+    """
+    redis_data = {}
+    for k, v in data.items():
+        if isinstance(v, (dict, list)):
+            redis_data[k] = json.dumps(v)
+        else:
+            redis_data[k] = str(v)
+    return redis_data
+
 @auth_ns.route('/userinfo')
 class UserInfo(Resource):
     @auth_ns.expect(user_info_model)
@@ -92,22 +110,18 @@ class UserInfo(Resource):
     def post(self):
         """Update or create user information and return user details"""
         data = request.json
-        user_key = f"{USER_PREFIX}{data['email']}"
+        email = data['email']
 
-        # Check if user exists
-        user_exists = redis_user_client.exists(user_key)
+        # Check if user exists using cache
+        user_info = get_user_from_cache_or_redis(email, redis_user_client)
 
-        if user_exists:
-            # User exists, update and retrieve additional details
-            redis_user_client.hmset(user_key, {
+        if user_info:
+            # User exists, update details
+            user_info.update({
                 'email': data['email'],
                 'avatar': data['avatar'],
                 'username': data['username']
             })
-            user_data = redis_user_client.hgetall(user_key)
-            # Parse JSON strings into objects for specific fields
-            user_info = parse_user_data(user_data)
-            
         else:
             # User does not exist, create new user
             user_info = {
@@ -119,11 +133,24 @@ class UserInfo(Resource):
                 'dictation_config': USER_DICTATION_CONFIG_DEFAULT,
                 'language': USER_LANGUAGE_DEFAULT
             }
-            redis_user_client.hmset(user_key, user_info)
 
-        # Create a new JWT token for the user
-        access_token = create_access_token(identity=data['email'], expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
-        refresh_token = create_refresh_token(identity=data['email'], expires_delta=JWT_REFRESH_TOKEN_EXPIRES)
+        # Update Redis and cache
+        update_user_cache(email, user_info)
+        
+        # Prepare data for Redis (encode complex objects as JSON strings)
+        redis_data = {}
+        for k, v in user_info.items():
+            if isinstance(v, (dict, list)):
+                redis_data[k] = json.dumps(v)
+            else:
+                redis_data[k] = str(v)
+                
+        # Update Redis with properly encoded data
+        redis_user_client.hmset(f"{USER_PREFIX}{email}", redis_data)
+
+        # Create JWT tokens
+        access_token = create_access_token(identity=email, expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
+        refresh_token = create_refresh_token(identity=email, expires_delta=JWT_REFRESH_TOKEN_EXPIRES)
 
         # Prepare response
         response = make_response(jsonify({
@@ -170,14 +197,15 @@ class Register(Resource):
             return {"error": "All fields are required"}, 400
 
         try:
-            # Check if user already exists
-            if redis_user_client.exists(f"user:{email}"):
+            # Check if user already exists using cache
+            existing_user = get_user_from_cache_or_redis(email, redis_user_client)
+            if existing_user:
                 return {"error": "User with this email already exists"}, 400
 
             # Hash the password
             hashed_password = hash_password(password)
 
-            # Store user data in Redis
+            # Prepare user data
             user_data = {
                 "username": username,
                 "email": email,
@@ -188,7 +216,10 @@ class Register(Resource):
                 "dictation_config": USER_DICTATION_CONFIG_DEFAULT,
                 "language": USER_LANGUAGE_DEFAULT
             }
-            redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
+
+            # Update both cache and Redis
+            update_user_cache(email, user_data)
+            redis_user_client.hmset(f"{USER_PREFIX}{email}", _prepare_redis_data(user_data))
 
             # Create JWT token
             access_token = create_access_token(
@@ -206,7 +237,7 @@ class Register(Resource):
             logger.info(f"User registered successfully: {email}")
             response_data = {
                 "message": "User registered successfully",
-                "user": parse_user_data(user_info)
+                "user": user_info
             }
             response = make_response(jsonify(response_data), 200)
             response.headers['x-ds-access-token'] = access_token
@@ -231,11 +262,9 @@ class Login(Resource):
 
             if not all([email, username, avatar]):
                 return {"error": "Username, email and avatar are required"}, 400
-
-            user_key = f"user:{email}"
             
-            # Get existing user data if it exists
-            existing_user = redis_user_client.hgetall(user_key)
+            # Get existing user data from cache or Redis
+            existing_user = get_user_from_cache_or_redis(email, redis_user_client)
             
             # Prepare user data
             user_data = {
@@ -245,26 +274,26 @@ class Login(Resource):
             }
 
             if not existing_user:
-                # New user - add plan
-                user_data["plan"] = USER_PLAN_DEFAULT
-                user_data["role"] = USER_ROLE_DEFAULT
-                user_data["dictation_config"] = USER_DICTATION_CONFIG_DEFAULT
-                user_data["language"] = USER_LANGUAGE_DEFAULT
+                # New user - add default values
+                user_data.update({
+                    "plan": USER_PLAN_DEFAULT,
+                    "role": USER_ROLE_DEFAULT,
+                    "dictation_config": USER_DICTATION_CONFIG_DEFAULT,
+                    "language": USER_LANGUAGE_DEFAULT
+                })
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated
-                existing_data = {k.decode('utf-8'): v.decode('utf-8') 
-                               for k, v in existing_user.items()}
-                # Preserve existing fields that are not being updated
-                for key in existing_data:
+                for key, value in existing_user.items():
                     if key not in user_data and key != 'password':
-                        user_data[key] = existing_data[key]
+                        user_data[key] = value
                 logger.info(f"Updating existing user: {email}")
 
-            # Update Redis with user data
-            redis_user_client.hmset(user_key, user_data)
+            # Update Redis and cache
+            update_user_cache(email, user_data)
+            redis_user_client.hmset(f"{USER_PREFIX}{email}", _prepare_redis_data(user_data))
 
-            # Create JWT token
+            # Create JWT tokens
             access_token = create_access_token(
                 identity=email,
                 expires_delta=JWT_ACCESS_TOKEN_EXPIRES
@@ -273,10 +302,6 @@ class Login(Resource):
                 identity=email,
                 expires_delta=JWT_REFRESH_TOKEN_EXPIRES
             )
-
-            # Get complete user data to return
-            updated_user_data = redis_user_client.hgetall(user_key)
-            user_data = parse_user_data(updated_user_data)
 
             response_data = {
                 "message": "Login successful",
@@ -301,10 +326,9 @@ class TokenRefresh(Resource):
         new_access_token = create_access_token(identity=current_user)
         response = make_response(jsonify({"message": "Token refreshed"}), 200)
         response.headers['x-ds-access-token'] = new_access_token
-        # return user info in body
-        user_info = redis_user_client.hgetall(f"{USER_PREFIX}{current_user}")
-        # Get complete user data to return
-        user_data = parse_user_data(user_info)
+        
+        # Get user info from cache
+        user_data = get_user_from_cache_or_redis(current_user, redis_user_client)
         response.data = json.dumps(user_data)
         return response
 
@@ -343,12 +367,13 @@ class Users(Resource):
         """Get all users"""
         try:
             # Get all user keys
-            user_keys = redis_user_client.keys("user:*")
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
             users = []
             for key in user_keys:
-                user_data = redis_user_client.hgetall(key)
-                user_info = parse_user_data(user_data)
-                users.append(user_info)
+                email = key.decode('utf-8').replace(USER_PREFIX, '')
+                user_data = get_user_from_cache_or_redis(email, redis_user_client)
+                if user_data:
+                    users.append(user_data)
 
             logger.info(f"Retrieved {len(users)} users")
             return {"users": users}, 200
@@ -366,10 +391,9 @@ class UserPlan(Resource):
         """Update user plan"""
         try:
             current_user_email = get_jwt_identity()
-            current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
+            current_user_data = get_user_from_cache_or_redis(current_user_email, redis_user_client)
             
-            # only allow admin to change user plan
-            if current_user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+            if not current_user_data or current_user_data.get('role') != 'Admin':
                 logger.warning(f"Non-admin user {current_user_email} attempted to change user plan")
                 return {"error": "Only 'Admin' role can change user plans"}, 403
 
@@ -387,19 +411,17 @@ class UserPlan(Resource):
             else:
                 expire_time = None
 
-            # Create plan object structure
             plan_data = {
                 "name": new_plan,
                 "expireTime": expire_time
             }
             
-            # Convert to JSON string for Redis storage
             plan_json = json.dumps(plan_data)
-
             results = []
+            
             for email in emails:
-                user_key = f"user:{email}"
-                if not redis_user_client.exists(user_key):
+                user_data = get_user_from_cache_or_redis(email, redis_user_client)
+                if not user_data:
                     logger.warning(f"Attempted to update plan for non-existent user: {email}")
                     results.append({
                         "email": email,
@@ -409,8 +431,10 @@ class UserPlan(Resource):
                     continue
 
                 try:
-                    # Store the plan object as JSON string
-                    redis_user_client.hset(user_key, 'plan', plan_json)
+                    user_data['plan'] = plan_data
+                    update_user_cache(email, user_data)
+                    redis_user_client.hset(f"{USER_PREFIX}{email}", 'plan', plan_json)
+                    
                     logger.info(f"Updated plan for user {email} to {plan_data}")
                     results.append({
                         "email": email,
@@ -446,10 +470,9 @@ class UserRole(Resource):
         """Update user role"""
         try:
             current_user_email = get_jwt_identity()
-            current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
+            current_user_data = get_user_from_cache_or_redis(current_user_email, redis_user_client)
             
-            # only allow admin to change user role
-            if current_user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+            if not current_user_data or current_user_data.get('role') != 'Admin':
                 logger.warning(f"Non-admin user {current_user_email} attempted to change user role")
                 return {"error": "Only 'Admin' role can change user roles"}, 403
 
@@ -462,8 +485,8 @@ class UserRole(Resource):
 
             results = []
             for email in emails:
-                user_key = f"user:{email}"
-                if not redis_user_client.exists(user_key):
+                user_data = get_user_from_cache_or_redis(email, redis_user_client)
+                if not user_data:
                     logger.warning(f"Attempted to update role for non-existent user: {email}")
                     results.append({
                         "email": email,
@@ -473,7 +496,10 @@ class UserRole(Resource):
                     continue
 
                 try:
-                    redis_user_client.hset(user_key, 'role', new_role)
+                    user_data['role'] = new_role
+                    update_user_cache(email, user_data)
+                    redis_user_client.hset(f"{USER_PREFIX}{email}", 'role', new_role)
+                    
                     logger.info(f"Updated role for user {email} to {new_role}")
                     results.append({
                         "email": email,

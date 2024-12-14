@@ -7,6 +7,16 @@ from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
 from datetime import datetime
 from werkzeug.local import LocalProxy
 from flask import current_app
+from cache import (
+    get_channel_from_cache_or_redis,
+    get_video_from_cache_or_redis,
+    get_user_from_cache_or_redis,
+    update_user_cache,
+    get_user_progress_from_cache_or_redis,
+    get_user_duration_from_cache_or_redis,
+    get_user_config_from_cache_or_redis,
+    get_user_missed_words_from_cache_or_redis
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -63,35 +73,33 @@ class DictationProgress(Resource):
             if not all(field in progress_data for field in required_fields):
                 return {"error": "Missing required fields"}, 400
 
-            video_key = f"{VIDEO_PREFIX}{progress_data['channelId']}:{progress_data['videoId']}"
-            if not redis_resource_client.exists(video_key):
+            # Check if video exists using cache
+            video_data = get_video_from_cache_or_redis(progress_data['channelId'], progress_data['videoId'], redis_resource_client)
+            if not video_data:
                 return {"error": "Video not found"}, 404
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
+            # Get user data using cache
+            user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
             if not user_data:
                 return {"error": "User not found"}, 404
 
             # Update dictation progress
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            dictation_progress = user_data.get('dictation_progress', {})
             video_key = f"{progress_data['channelId']}:{progress_data['videoId']}"
             dictation_progress[video_key] = {
                 'userInput': progress_data['userInput'],
                 'currentTime': progress_data['currentTime'],
                 'overallCompletion': progress_data['overallCompletion']
             }
-            redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
 
-            # Update structured duration data
-            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}, "date": {}}').decode('utf-8'))
-
+            # Update duration data
+            duration_data = user_data.get('duration_data', {"duration": 0, "channels": {}, "date": {}})
             channel_id = progress_data['channelId']
             video_id = progress_data['videoId']
             duration_increment = progress_data['duration']
 
             # Update total duration
-            duration_data['duration'] += duration_increment
+            duration_data['duration'] = duration_data.get('duration', 0) + duration_increment
 
             # Update channel duration
             if channel_id not in duration_data['channels']:
@@ -105,11 +113,21 @@ class DictationProgress(Resource):
 
             # Update daily duration
             today = datetime.now().strftime('%Y-%m-%d')
+            if 'date' not in duration_data:
+                duration_data['date'] = {}
             if today not in duration_data['date']:
                 duration_data['date'][today] = 0
             duration_data['date'][today] += duration_increment
 
+            # Update Redis and cache
+            user_key = f"{USER_PREFIX}{user_email}"
+            redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
             redis_user_client.hset(user_key, 'duration_data', json.dumps(duration_data))
+
+            # Update user cache with new data
+            user_data['dictation_progress'] = dictation_progress
+            user_data['duration_data'] = duration_data
+            update_user_cache(user_email, user_data)
 
             logger.info(f"Updated progress and duration for user: {user_email}, channel: {channel_id}, video: {video_id}")
             return {
@@ -137,21 +155,14 @@ class DictationProgress(Resource):
             if not channel_id or not video_id:
                 return {"error": "channelId and videoId are required"}, 400
 
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            if not redis_resource_client.exists(video_key):
+            # Check if video exists using cache
+            video_data = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
+            if not video_data:
                 return {"error": "Video not found"}, 404
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
-                return {"error": "User not found"}, 404
-
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
-            video_key = f"{channel_id}:{video_id}"
-            progress = dictation_progress.get(video_key)
-
-            if not progress:
+            # Get user progress using cache
+            dictation_progress = get_user_progress_from_cache_or_redis(user_email, redis_user_client)
+            if not dictation_progress:
                 return {
                     "channelId": channel_id, 
                     "videoId": video_id, 
@@ -160,13 +171,20 @@ class DictationProgress(Resource):
                     "overallCompletion": 0
                 }, 200
 
+            video_key = f"{channel_id}:{video_id}"
+            progress = dictation_progress.get(video_key, {
+                "userInput": "", 
+                "currentTime": 0, 
+                "overallCompletion": 0
+            })
+
             logger.info(f"Retrieved dictation progress for user: {user_email}, channel: {channel_id}, video: {video_id}")
             return {
                 "channelId": channel_id,
                 "videoId": video_id,
-                "userInput": progress['userInput'],
-                "currentTime": progress['currentTime'],
-                "overallCompletion": progress['overallCompletion']
+                "userInput": progress.get('userInput', ""),
+                "currentTime": progress.get('currentTime', 0),
+                "overallCompletion": progress.get('overallCompletion', 0)
             }, 200
 
         except Exception as e:
@@ -187,20 +205,16 @@ class ChannelDictationProgress(Resource):
             if not channel_id:
                 return {"error": "channelId is required"}, 400
 
-            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-            if not redis_resource_client.exists(channel_key):
+            # Check if channel exists using cache
+            channel_data = get_channel_from_cache_or_redis(channel_id, redis_resource_client)
+            if not channel_data:
                 return {"error": "Channel not found"}, 404
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
-                return {"error": "User not found"}, 404
-
+            # Get user progress using cache
+            dictation_progress = get_user_progress_from_cache_or_redis(user_email, redis_user_client)
+            
             pattern = f"{VIDEO_PREFIX}{channel_id}:*"
             video_keys = redis_resource_client.scan_iter(pattern)
-            
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
             
             channel_progress = {}
             for video_key in video_keys:
@@ -223,25 +237,17 @@ class ChannelDictationProgress(Resource):
     def get(self, channel_id):
         """Get all dictation progress for a specific channel"""
         try:
-            # Get user email from JWT token
             user_email = get_jwt_identity()
 
-            # Get existing user data
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
-                return {"error": "User not found"}, 404
-
-            # Get existing dictation progress
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            # Get user progress using cache
+            dictation_progress = get_user_progress_from_cache_or_redis(user_email, redis_user_client)
 
             # Filter progress for the specific channel
             channel_progress = []
             for key, value in dictation_progress.items():
                 if key.startswith(f"{channel_id}:"):
                     video_id = key.split(':')[1]
-                    overall_completion = value['overallCompletion']
+                    overall_completion = value.get('overallCompletion', 0)
                     channel_progress.append({
                         'videoId': video_id,
                         'overallCompletion': overall_completion
@@ -265,18 +271,10 @@ class AllUsers(Resource):
             user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
             users = []
             for key in user_keys:
-                user_data = redis_user_client.hgetall(key)
-                user_info = {}
-                for k, v in user_data.items():
-                    key_str = k.decode('utf-8')
-                    value_str = v.decode('utf-8')
-                    try:
-                        # Attempt to parse each field as JSON
-                        user_info[key_str] = json.loads(value_str)
-                    except json.JSONDecodeError:
-                        # If parsing fails, keep it as a string
-                        user_info[key_str] = value_str
-                users.append(user_info)
+                user_email = key.decode('utf-8').replace(USER_PREFIX, '')
+                user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
+                if user_data:
+                    users.append(user_data)
 
             logger.info(f"Retrieved information for {len(users)} users")
             return {"users": users}, 200
@@ -293,26 +291,24 @@ class AllDictationProgress(Resource):
         """Get all dictation progress for the user with channel and video details"""
         try:
             user_email = get_jwt_identity()
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
+            
+            # Get user progress using cache
+            dictation_progress = get_user_progress_from_cache_or_redis(user_email, redis_user_client)
+            if not dictation_progress:
                 return {"error": "User not found"}, 404
-
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
 
             all_progress = []
             for key, value in dictation_progress.items():
                 channel_id, video_id = key.split(':')
                 
-                channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-                channel_info = redis_resource_client.hgetall(channel_key)
+                # Get channel info from cache
+                channel_info = get_channel_from_cache_or_redis(channel_id, redis_resource_client)
                 if not channel_info:
                     continue
-                channel_name = channel_info[b'name'].decode('utf-8')
+                channel_name = channel_info.get('name')
 
-                video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-                video_info = redis_resource_client.hgetall(video_key)
+                # Get video info from cache
+                video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
                 if not video_info:
                     continue
 
@@ -320,9 +316,9 @@ class AllDictationProgress(Resource):
                     'channelId': channel_id,
                     'channelName': channel_name,
                     'videoId': video_id,
-                    'videoTitle': video_info[b'title'].decode('utf-8'),
-                    'videoLink': video_info[b'link'].decode('utf-8'),
-                    'overallCompletion': value['overallCompletion']
+                    'videoTitle': video_info.get('title'),
+                    'videoLink': video_info.get('link'),
+                    'overallCompletion': value.get('overallCompletion', 0)
                 })
 
             logger.info(f"Retrieved all dictation progress for user: {user_email}")
@@ -341,13 +337,10 @@ class UserDuration(Resource):
         try:
             user_email = get_jwt_identity()
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
+            # Get user duration using cache
+            duration_data = get_user_duration_from_cache_or_redis(user_email, redis_user_client)
+            if not duration_data:
                 return {"error": "User not found"}, 404
-
-            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}, "date": {}}').decode('utf-8'))
 
             total_duration = duration_data.get('duration', 0)
             daily_durations = duration_data.get('date', {})
@@ -373,9 +366,8 @@ class UserConfig(Resource):
             user_email = get_jwt_identity()
             config_data = request.json
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
+            # Get user data using cache
+            user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
             if not user_data:
                 return {"error": "User not found"}, 404
 
@@ -388,34 +380,23 @@ class UserConfig(Resource):
                         d[k] = v
                 return d
 
-            # Update user data with new values
+            # Update user data
+            user_key = f"{USER_PREFIX}{user_email}"
             for key, value in config_data.items():
                 if isinstance(value, (dict, list)):
-                    existing_value = user_data.get(key.encode(), b'{}').decode('utf-8')
-                    try:
-                        existing_dict = json.loads(existing_value)
-                    except json.JSONDecodeError:
-                        existing_dict = {}
-                    updated_value = update_nested_dict(existing_dict, value) if isinstance(value, dict) else value
+                    existing_value = user_data.get(key, {})
+                    updated_value = update_nested_dict(existing_value, value) if isinstance(value, dict) else value
+                    user_data[key] = updated_value
                     redis_user_client.hset(user_key, key, json.dumps(updated_value))
                 else:
+                    user_data[key] = value
                     redis_user_client.hset(user_key, key, value)
 
+            # Update cache
+            update_user_cache(user_email, user_data)
+
             logger.info(f"Updated configuration for user: {user_email}")
-            
-            # Fetch updated user data
-            updated_user_data = redis_user_client.hgetall(user_key)
-            updated_config = {}
-            for k, v in updated_user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
-                    try:
-                        updated_config[key] = json.loads(value)
-                    except json.JSONDecodeError:
-                        updated_config[key] = value
-            
-            return {"message": "User configuration updated successfully", "config": updated_config}, 200
+            return {"message": "User configuration updated successfully", "config": user_data}, 200
 
         except json.JSONDecodeError as e:
             logger.error(f"JSON Decode Error: {str(e)}")
@@ -431,22 +412,10 @@ class UserConfig(Resource):
         try:
             user_email = get_jwt_identity()
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
+            # Get user config using cache
+            config = get_user_config_from_cache_or_redis(user_email, redis_user_client)
+            if not config:
                 return {"error": "User not found"}, 404
-
-            # Convert all values to JSON, except for the password
-            config = {}
-            for k, v in user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
-                    try:
-                        config[key] = json.loads(value)
-                    except json.JSONDecodeError:
-                        config[key] = value
 
             logger.info(f"Retrieved configuration for user: {user_email}")
             return {"config": config}, 200
@@ -469,21 +438,25 @@ class MissedWords(Resource):
             if 'words' not in words_data or not isinstance(words_data['words'], list):
                 return {"error": "Invalid input format. Expected 'words' array"}, 400
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
+            # Get user data using cache
+            user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
             if not user_data:
                 return {"error": "User not found"}, 404
 
             # Get existing missed words or initialize empty set
-            missed_words = set(json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8')))
+            missed_words = set(user_data.get('missed_words', []))
             
-            # Add new words (set will automatically handle duplicates)
+            # Add new words
             missed_words.update(words_data['words'])
             
             # Convert back to list and store
             missed_words_list = list(missed_words)
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_list))
+
+            # Update cache
+            user_data['missed_words'] = missed_words_list
+            update_user_cache(user_email, user_data)
 
             logger.info(f"Updated missed words for user: {user_email}")
             return {
@@ -501,14 +474,11 @@ class MissedWords(Resource):
         """Get user's missed words list"""
         try:
             user_email = get_jwt_identity()
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
-            if not user_data:
+            
+            # Get missed words using cache
+            missed_words = get_user_missed_words_from_cache_or_redis(user_email, redis_user_client)
+            if missed_words is None:
                 return {"error": "User not found"}, 404
-
-            # Get missed words or return empty list if none exist
-            missed_words = json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8'))
 
             logger.info(f"Retrieved missed words for user: {user_email}")
             return {
@@ -531,21 +501,25 @@ class MissedWords(Resource):
             if 'words' not in words_data or not isinstance(words_data['words'], list):
                 return {"error": "Invalid input format. Expected 'words' array"}, 400
 
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-
+            # Get user data using cache
+            user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
             if not user_data:
                 return {"error": "User not found"}, 404
 
             # Get existing missed words
-            missed_words = set(json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8')))
+            missed_words = set(user_data.get('missed_words', []))
             
             # Remove specified words
             missed_words = missed_words - set(words_data['words'])
             
             # Convert back to list and store
             missed_words_list = list(missed_words)
+            user_key = f"{USER_PREFIX}{user_email}"
             redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_list))
+
+            # Update cache
+            user_data['missed_words'] = missed_words_list
+            update_user_cache(user_email, user_data)
 
             logger.info(f"Deleted specified words for user: {user_email}")
             return {

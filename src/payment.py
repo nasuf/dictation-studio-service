@@ -23,6 +23,13 @@ import logging
 from functools import wraps
 from werkzeug.local import LocalProxy
 from flask import current_app
+from cache import (
+    get_user_from_cache_or_redis,
+    update_user_plan_in_cache,
+    get_failed_update_from_cache_or_redis,
+    update_failed_update_in_cache,
+    remove_failed_update_from_cache
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -127,14 +134,7 @@ class CreateCheckoutSession(Resource):
 
 @payment_ns.route('/webhook')
 class StripeWebhook(Resource):
-    @payment_ns.doc(
-        responses={
-            200: 'Success',
-            400: 'Invalid signature or payload',
-            500: 'Server Error'
-        },
-        description='Handle Stripe webhook events for checkout session completion'
-    )
+    @payment_ns.doc(responses={200: 'Success', 400: 'Invalid signature or payload', 500: 'Server Error'})
     def post(self):
         """Handle Stripe webhook events for checkout session completion"""
         try:
@@ -171,22 +171,22 @@ class StripeWebhook(Resource):
                     return {"error": "Missing required metadata"}, 400
 
                 try:
-                    # try to update user plan (with automatic retry)
+                    # Try to update user plan (with automatic retry)
                     plan_data = update_user_plan(user_email, plan_name, duration, isRecurring)
                     logger.info(f"Successfully updated plan for user {user_email}: {plan_data}")
                     
-                    # check if there are failed records, if so, delete them
-                    failed_key = f"failed_update:{session.id}"
-                    redis_user_client.delete(failed_key)
+                    # Remove any existing failed records from cache and Redis
+                    remove_failed_update_from_cache(session.id, redis_user_client)
 
                 except Exception as e:
                     logger.error(f"Error updating user plan: {str(e)}")
-                    # store failed records
+                    # Store failed records in cache and Redis
                     store_failed_update(session.id, user_email, {
                         "name": plan_name,
-                        "duration": duration
+                        "duration": duration,
+                        "isRecurring": isRecurring
                     }, str(e))
-                    # start background retry task
+                    # Start background retry task
                     retry_failed_updates.apply_async(args=[session.id])
             else:
                 logger.warning(f"Unhandled event type: {event['type']}")  
@@ -200,41 +200,52 @@ class StripeWebhook(Resource):
 @payment_ns.route('/verify-session/<string:session_id>')
 class VerifyPayment(Resource):
     @jwt_required()
-    @payment_ns.doc(
-        responses={
-            200: 'Success - Returns payment status',
-            400: 'Invalid session ID',
-            401: 'Unauthorized',
-            500: 'Server Error'
-        },
-        description='Verify payment session status'
-    )
+    @payment_ns.doc(responses={200: 'Success', 400: 'Invalid session ID', 401: 'Unauthorized', 500: 'Server Error'})
     def post(self, session_id):
         """Verify payment session status"""
         try:
             session = stripe.checkout.Session.retrieve(session_id)
             logger.info(f"Session verification successful: {session}")
-            # get existing plan expiration time from redis
-            user_key = f"{USER_PREFIX}{session.metadata.get('user_email')}"
-            user_data = redis_user_client.hgetall(user_key)
-            # Parse JSON strings into objects for specific fields
-            user_info = {}
-            for k, v in user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
-                    # Try to parse JSON strings for specific fields
-                    try:
-                        # Attempt to parse each field as JSON
-                        user_info[key] = json.loads(value)
-                    except json.JSONDecodeError:
-                        # If parsing fails, keep it as a string
-                        user_info[key] = value
+            
+            # Get metadata from session
+            metadata = session.get('metadata', {})
+            user_email = metadata.get('user_email')
+            plan_name = metadata.get('plan')
+            duration = int(metadata.get('duration', 0))
+            isRecurring = metadata.get('isRecurring')
 
+            # If payment is successful, update the plan
+            logger.info(f"Session payment status: {session.payment_status}")
+            if session.payment_status == 'paid':
+                logger.info(f"Payment successful for session {session_id}, updating user plan")
+                try:
+                    # Update user plan
+                    plan_data = update_user_plan(user_email, plan_name, duration, isRecurring)
+                    logger.info(f"Successfully updated plan for user {user_email}: {plan_data}")
+                except Exception as e:
+                    logger.error(f"Error updating user plan during verification: {str(e)}")
+                    # Store failed update for retry
+                    store_failed_update(session_id, user_email, {
+                        "name": plan_name,
+                        "duration": duration,
+                        "isRecurring": isRecurring
+                    }, str(e))
+                    retry_failed_updates.apply_async(args=[session_id])
+
+            # Get latest user data after potential update
+            user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
+            
+            # Filter out password from user data
+            user_info = {}
+            if user_data:
+                user_info = {k: v for k, v in user_data.items() if k != 'password'}
+            
             return {
                 "status": session.payment_status,
-                "userInfo": user_info
+                "userInfo": user_info,
+                "metadata": metadata
             }, 200
+
         except stripe.error.StripeError as e:
             logger.error(f"Stripe error: {str(e)}")
             return {"error": str(e)}, 400
@@ -245,33 +256,20 @@ class VerifyPayment(Resource):
 @payment_ns.route('/cancel-subscription')
 class CancelSubscription(Resource):
     @jwt_required()
-    @payment_ns.doc(
-        responses={
-            200: 'Success - Subscription cancelled',
-            400: 'Bad Request',
-            401: 'Unauthorized',
-            404: 'Subscription not found',
-            500: 'Server Error'
-        },
-        description='Cancel user\'s current subscription'
-    )
+    @payment_ns.doc(responses={200: 'Success', 400: 'Bad Request', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def post(self):
         """Cancel user's current subscription"""
         try:
             user_email = get_jwt_identity()
-            user_key = f"{USER_PREFIX}{user_email}"
             
-            # Get user data from Redis
-            user_data = redis_user_client.hgetall(user_key)
+            # Get user data using cache
+            logger.info(f"Getting user data for {user_email} to cancel subscription")
+            user_data = get_user_from_cache_or_redis(user_email, redis_user_client)
             if not user_data:
                 return {"error": "User not found"}, 404
 
             # Get current plan data
-            try:
-                plan_data = json.loads(user_data.get(b'plan', b'{}').decode('utf-8'))
-            except json.JSONDecodeError:
-                plan_data = {}
-
+            plan_data = user_data.get('plan', {})
             if not plan_data or not plan_data.get('isRecurring'):
                 return {"error": "No active recurring subscription found"}, 404
 
@@ -294,13 +292,14 @@ class CancelSubscription(Resource):
                 cancel_at_period_end=True
             )
 
-            # Update plan data in Redis to reflect cancellation
-            # expireTime should be set to original nextPaymentTime, and remove nextPaymentTime
+            # Update plan data
             plan_data['cancelledAt'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             plan_data['status'] = 'cancelled'
             plan_data['expireTime'] = plan_data['nextPaymentTime']
             plan_data.pop('nextPaymentTime', None)
-            redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
+            
+            # Update cache and Redis
+            update_user_plan_in_cache(user_email, plan_data, redis_user_client)
 
             logger.info(f"Subscription cancelled for user: {user_email}")
             return {
@@ -318,15 +317,14 @@ class CancelSubscription(Resource):
 @with_retry()
 def update_user_plan(user_email, plan_name, duration, isRecurring):
     """Update user plan core logic"""
-    user_key = f"{USER_PREFIX}{user_email}"
-
-    # calculate plan expiration time
+    # Calculate plan expiration time
     expire_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
     next_payment_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
-    # create new plan data
-    # if isRecurring, do not set expireTime but set nextPaymentTime
-    # turn isRecurring to boolean
+    
+    # Convert isRecurring to boolean
     isRecurring = isRecurring == 'True'
+    
+    # Create new plan data
     plan_data = {
         "name": plan_name,
         "expireTime": expire_time if not isRecurring else None,
@@ -335,8 +333,8 @@ def update_user_plan(user_email, plan_name, duration, isRecurring):
         "status": "active"
     }
 
-    # store plan data to Redis
-    redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
+    # Update cache and Redis
+    update_user_plan_in_cache(user_email, plan_data, redis_user_client)
     return plan_data
 
 def store_failed_update(session_id, user_email, plan_data, error, retry_count=0):
@@ -352,12 +350,12 @@ def store_failed_update(session_id, user_email, plan_data, error, retry_count=0)
             'next_retry': (datetime.now() + timedelta(seconds=PAYMENT_RETRY_DELAY_SECONDS)).isoformat()
         }
         
-        # use session_id as key to store failed records
-        key = f"failed_update:{session_id}"
-        redis_user_client.setex(
-            key,
+        # Update cache and Redis
+        update_failed_update_in_cache(
+            session_id,
+            failed_update,
             PAYMENT_RETRY_KEY_EXPIRE_SECONDS,
-            json.dumps(failed_update)
+            redis_user_client
         )
         
         logger.error(f"Stored failed update for session {session_id}, retry count: {retry_count}")
@@ -368,25 +366,22 @@ def store_failed_update(session_id, user_email, plan_data, error, retry_count=0)
 def retry_failed_updates(self, session_id):
     """Background task to handle failed updates"""
     try:
-        failed_key = f"failed_update:{session_id}"
-        failed_data = redis_user_client.get(failed_key)
-
-        if not failed_data:
+        # Get failed update data from cache
+        failed_update = get_failed_update_from_cache_or_redis(session_id, redis_user_client)
+        if not failed_update:
             logger.info(f"No failed update found for session {session_id}")
             return
 
-        failed_update = json.loads(failed_data)
         retry_count = failed_update.get('retry_count', 0)
-
         if retry_count >= PAYMENT_MAX_RETRY_ATTEMPTS:
             logger.error(f"Max retries reached for session {session_id}")
             return
 
-        # update retry count
+        # Update retry count
         failed_update['retry_count'] = retry_count + 1
 
         try:
-            # retry update user plan
+            # Retry update user plan
             update_user_plan(
                 failed_update['user_email'],
                 failed_update['plan_data']['name'],
@@ -394,12 +389,12 @@ def retry_failed_updates(self, session_id):
                 failed_update['plan_data']['isRecurring']
             )
             
-            # update successful, delete failed records
-            redis_user_client.delete(failed_key)
+            # Update successful, remove failed records from cache and Redis
+            remove_failed_update_from_cache(session_id, redis_user_client)
             logger.info(f"Retry successful for session {session_id}")
 
         except Exception as e:
-            # update failed records and schedule next retry
+            # Update failed records and schedule next retry
             store_failed_update(
                 session_id,
                 failed_update['user_email'],
@@ -408,7 +403,7 @@ def retry_failed_updates(self, session_id):
                 retry_count + 1
             )
             
-            # if not reached max retry times, schedule next retry
+            # If not reached max retry times, schedule next retry
             if retry_count + 1 < PAYMENT_MAX_RETRY_ATTEMPTS:
                 self.retry(countdown=PAYMENT_RETRY_DELAY_SECONDS)
 
