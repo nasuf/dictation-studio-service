@@ -46,7 +46,6 @@ def get_channel_from_cache_or_redis(channel_id, redis_client):
     """Get channel data from cache or Redis"""
     with cache_lock:
         if channel_id in channel_cache:
-            logger.info(f"Cache hit for channel {channel_id}")
             return channel_cache[channel_id]
         
         # If not in cache, get from Redis
@@ -58,7 +57,6 @@ def get_channel_from_cache_or_redis(channel_id, redis_client):
             channel_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in channel_data.items()}
             # Store in cache
             channel_cache[channel_id] = channel_data
-            logger.info(f"Cache miss for channel {channel_id}, stored in cache")
             return channel_data
         return None
 
@@ -73,7 +71,6 @@ def get_video_from_cache_or_redis(channel_id, video_id, redis_client):
     cache_key = f"{channel_id}:{video_id}"
     with video_cache_lock:
         if cache_key in video_cache:
-            logger.info(f"Cache hit for video {cache_key}")
             return video_cache[cache_key]
         
         # If not in cache, get from Redis
@@ -87,7 +84,6 @@ def get_video_from_cache_or_redis(channel_id, video_id, redis_client):
                 video_data['transcript'] = json.loads(video_data['transcript'])
             # Store in cache
             video_cache[cache_key] = video_data
-            logger.info(f"Cache miss for video {cache_key}, stored in cache")
             return video_data
         return None
 
@@ -122,7 +118,6 @@ def get_user_from_cache_or_redis(user_email, redis_client):
             
             # Store in cache
             user_cache[user_email] = decoded_data
-            logger.info(f"Cache miss for user {user_email}, stored in cache")
             return decoded_data
         return None
 
@@ -211,7 +206,6 @@ def get_failed_update_from_cache_or_redis(session_id, redis_client):
     with payment_cache_lock:
         cache_key = f"failed_update:{session_id}"
         if cache_key in payment_cache:
-            logger.info(f"Cache hit for failed update {session_id}")
             return payment_cache[cache_key]
         
         # If not in cache, get from Redis
@@ -220,7 +214,6 @@ def get_failed_update_from_cache_or_redis(session_id, redis_client):
             failed_update = json.loads(failed_data)
             # Store in cache
             payment_cache[cache_key] = failed_update
-            logger.info(f"Cache miss for failed update {session_id}, stored in cache")
             return failed_update
         return None
 
