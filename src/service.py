@@ -366,35 +366,36 @@ class YouTubeChannelOperations(Resource):
     @ns.expect(api.model('ChannelUpdate', {
         'name': fields.String(required=False, description='Updated channel name'),
         'image_url': fields.String(required=False, description='Updated channel image URL'),
-        'visibility': fields.String(required=False, description='Channel visibility (open, hidden, or user:user_id)')
+        'visibility': fields.String(required=False, description='Channel visibility (public, hidden, or user:user_id)')
     }))
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id):
         """Update specific fields of a YouTube channel"""
         try:
             data = request.json
+            if not data:
+                logger.warning("No update data provided")
+                return {"error": "No update data provided"}, 400
+
             channel_key = f"{CHANNEL_PREFIX}{channel_id}"
             
+            # Check if channel exists
             if not redis_resource_client.exists(channel_key):
                 logger.warning(f"Channel not found: {channel_id}")
                 return {"error": "Channel not found"}, 404
             
+            # Get current channel info
             channel_info = redis_resource_client.hgetall(channel_key)
+            decoded_info = {k.decode(): v.decode() for k, v in channel_info.items()}
             
-            # Update fields if provided
-            if 'name' in data:
-                channel_info[b'name'] = data['name'].encode()
-            if 'image_url' in data:
-                channel_info[b'image_url'] = data['image_url'].encode()
-            if 'visibility' in data:
-                channel_info[b'visibility'] = data['visibility'].encode()
+            # Update only the fields that are provided in the request
+            decoded_info.update({k: v for k, v in data.items() if v is not None})
             
             # Save updated channel info to Redis
-            redis_resource_client.hmset(channel_key, channel_info)
+            redis_resource_client.hmset(channel_key, decoded_info)
             
-            # Update cache with decoded data
-            channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
-            update_channel_cache(channel_id, channel_data)
+            # Update cache
+            update_channel_cache(channel_id, decoded_info)
             
             logger.info(f"Successfully updated channel: {channel_id}")
             return {"message": f"Channel {channel_id} updated successfully"}, 200
@@ -427,7 +428,6 @@ class YouTubeVideoList(Resource):
     @ns.param('data', 'JSON array of video data', type='string', required=True)
     @ns.param('transcript_files', 'Transcript files', type='file', required=True)
     def post(self):
-        """Save multiple YouTube videos with transcripts for multiple channels to Redis"""
         try:
             data = json.loads(request.form.get('data', '[]'))
             transcript_files = request.files.getlist('transcript_files')
@@ -443,6 +443,7 @@ class YouTubeVideoList(Resource):
                 channel_id = video_data.get('channel_id')
                 video_link = video_data.get('video_link')
                 title = video_data.get('title')
+                visibility = video_data.get('visibility', 'hidden')
 
                 if not channel_id or not video_link or not title:
                     logger.warning(f"Invalid input for video: {video_link}")
@@ -485,6 +486,7 @@ class YouTubeVideoList(Resource):
                     "link": video_link,
                     "video_id": video_id,
                     "title": title,
+                    "visibility": visibility,
                     "transcript": json.dumps(transcript)
                 }
                 redis_resource_client.hmset(video_key, video_info)
@@ -687,59 +689,81 @@ class YouTubeVideoDelete(Resource):
 class YouTubeVideoUpdate(Resource):
     @jwt_required()
     @ns.expect(api.model('VideoUpdate', {
-        'link': fields.String(required=True, description='Updated YouTube video URL'),
-        'title': fields.String(required=True, description='Updated video title')
+        'link': fields.String(required=False, description='Updated YouTube video URL'),
+        'title': fields.String(required=False, description='Updated video title'),
+        'visibility': fields.String(required=False, description='Updated video visibility'),
+        'video_id': fields.String(required=False, description='New video ID')
     }))
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
-        """Update a specific video's attributes (except transcript) in a channel"""
+        """Update a specific video's attributes in a channel"""
         try:
-            data = request.json
-            new_link = data.get('link')
-            new_title = data.get('title')
-
-            if not new_link or not new_title:
-                logger.warning("Invalid input: link and title are required")
-                return {"error": "Invalid input. Both link and title are required."}, 400
-
-            new_video_id = get_video_id(new_link)
-            if not new_video_id:
-                logger.warning(f"Invalid YouTube URL: {new_link}")
-                return {"error": f"Invalid YouTube URL: {new_link}"}, 400
-
+            # Get current video info from cache or Redis
             video_info = get_video_from_cache_or_redis(channel_id, video_id, redis_resource_client)
             if not video_info:
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
-            if new_video_id != video_id:
-                # Create new video entry
+            data = request.json
+            if not data:
+                logger.warning("No update data provided")
+                return {"error": "No update data provided"}, 400
+
+            # Check if there's a new video ID (either directly specified or derived from new link)
+            new_video_id = None
+            if 'link' in data:
+                extracted_video_id = get_video_id(data['link'])
+                if not extracted_video_id:
+                    logger.warning(f"Invalid YouTube URL: {data['link']}")
+                    return {"error": f"Invalid YouTube URL: {data['link']}"}, 400
+                new_video_id = extracted_video_id
+            elif 'video_id' in data:
+                new_video_id = data['video_id']
+
+            # If we're changing the video ID
+            if new_video_id and new_video_id != video_id:
+                # Create new video entry with updated info
+                new_video_info = video_info.copy()
+                new_video_info.update({k: v for k, v in data.items() if v is not None})
+                new_video_info['video_id'] = new_video_id
+                
+                # Save to Redis with new key
                 new_video_key = f"{VIDEO_PREFIX}{channel_id}:{new_video_id}"
-                new_video_info = {
-                    'link': new_link,
-                    'video_id': new_video_id,
-                    'title': new_title,
-                    'transcript': video_info['transcript']
-                }
-                redis_resource_client.hmset(new_video_key, new_video_info.copy())
+                redis_data = new_video_info.copy()
+                if 'transcript' in redis_data:
+                    redis_data['transcript'] = json.dumps(redis_data['transcript'])
+                if 'original_transcript' in redis_data:
+                    redis_data['original_transcript'] = json.dumps(redis_data['original_transcript'])
+                redis_resource_client.hmset(new_video_key, redis_data)
+                
+                # Update cache for new video
                 update_video_cache(channel_id, new_video_id, new_video_info)
 
-                # Delete old video
+                # Delete old video from Redis and cache
                 old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
                 redis_resource_client.delete(old_video_key)
                 remove_video_from_cache(channel_id, video_id)
+
+                logger.info(f"Successfully moved video from {video_id} to {new_video_id} in channel {channel_id}")
+                return {"message": f"Video moved from {video_id} to {new_video_id} successfully"}, 200
             else:
-                # Update existing video
-                video_info.update({
-                    'link': new_link,
-                    'title': new_title
-                })
-                old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-                redis_resource_client.hmset(old_video_key, video_info)
+                # Just update the existing video fields
+                video_info.update({k: v for k, v in data.items() if v is not None})
+                
+                # Save to Redis
+                video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+                redis_data = video_info.copy()
+                if 'transcript' in redis_data:
+                    redis_data['transcript'] = json.dumps(redis_data['transcript'])
+                if 'original_transcript' in redis_data:
+                    redis_data['original_transcript'] = json.dumps(redis_data['original_transcript'])
+                redis_resource_client.hmset(video_key, redis_data)
+                
+                # Update cache
                 update_video_cache(channel_id, video_id, video_info)
 
-            logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
-            return {"message": f"Video {video_id} updated successfully"}, 200
+                logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
+                return {"message": f"Video {video_id} updated successfully"}, 200
 
         except Exception as e:
             logger.error(f"Error updating video: {str(e)}")
