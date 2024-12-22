@@ -532,29 +532,26 @@ class YouTubeVideoList(Resource):
 @ns.route('/video-list/<string:channel_id>')
 class YouTubeVideoListByChannel(Resource):
     @jwt_required()
-    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
+    @ns.doc(params={'ignore_visibility': 'If set to "true", returns all videos regardless of visibility'})
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
-        try:
-            pattern = f"{VIDEO_PREFIX}{channel_id}:*"
-            videos = []
-            
-            for key in redis_resource_client.scan_iter(pattern):
-                video_data = redis_resource_client.hgetall(key)
-                if video_data:
+        ignore_visibility = request.args.get('ignore_visibility', 'false')
+        pattern = f"{VIDEO_PREFIX}{channel_id}:*"
+        videos = []
+        
+        for key in redis_resource_client.scan_iter(pattern):
+            video_data = redis_resource_client.hgetall(key)
+            if video_data:
+                if (ignore_visibility == 'false' and video_data[b'visibility'].decode() == 'public') or ignore_visibility == 'true':
                     videos.append({
                         "video_id": video_data[b'video_id'].decode(),
                         "link": video_data[b'link'].decode(),
                         "title": video_data[b'title'].decode(),
                         'transcript': json.loads(video_data[b'transcript'].decode())
                     })
-            
-            logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
-            return {"channel_id": channel_id, "videos": videos}, 200
-            
-        except Exception as e:
-            logger.error(f"Error retrieving video list for channel {channel_id}: {str(e)}")
-            return {"error": f"Error retrieving video list: {str(e)}"}, 500
+        
+        logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
+        return {"channel_id": channel_id, "videos": videos}, 200
 
 @ns.route('/video-transcript/<string:channel_id>/<string:video_id>')
 class VideoTranscript(Resource):
