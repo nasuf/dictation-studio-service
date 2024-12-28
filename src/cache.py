@@ -6,7 +6,7 @@ from threading import Lock
 from config import CHANNEL_PREFIX, VIDEO_PREFIX, USER_PREFIX
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 channel_cache = LRUCache(maxsize=1000)
@@ -46,9 +46,11 @@ def get_channel_from_cache_or_redis(channel_id, redis_client):
     """Get channel data from cache or Redis"""
     with cache_lock:
         if channel_id in channel_cache:
+            logger.debug(f"Cache hit for channel {channel_id}")
             return channel_cache[channel_id]
         
         # If not in cache, get from Redis
+        logger.debug(f"Cache miss for channel {channel_id}")
         channel_key = f"{CHANNEL_PREFIX}{channel_id}"
         channel_data = redis_client.hgetall(channel_key)
         
@@ -71,9 +73,11 @@ def get_video_from_cache_or_redis(channel_id, video_id, redis_client):
     cache_key = f"{channel_id}:{video_id}"
     with video_cache_lock:
         if cache_key in video_cache:
+            logger.debug(f"Cache hit for video {cache_key}")
             return video_cache[cache_key]
         
         # If not in cache, get from Redis
+        logger.debug(f"Cache miss for video {cache_key}")
         video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
         video_data = redis_client.hgetall(video_key)
         
@@ -91,24 +95,25 @@ def update_video_cache(channel_id, video_id, video_data):
     """Update video cache"""
     cache_key = f"{channel_id}:{video_id}"
     with video_cache_lock:
-        logger.info(f"Updating cache for video {cache_key}")
+        logger.debug(f"Updating cache for video {cache_key}")
         video_cache[cache_key] = video_data
 
 def remove_video_from_cache(channel_id, video_id):
     """Remove video from cache"""
     cache_key = f"{channel_id}:{video_id}"
     with video_cache_lock:
-        logger.info(f"Removing video {cache_key} from cache")
+        logger.debug(f"Removing video {cache_key} from cache")
         video_cache.pop(cache_key, None)
 
 def get_user_from_cache_or_redis(user_email, redis_client):
     """Get user data from cache or Redis"""
     with user_cache_lock:
         if user_email in user_cache:
-            logger.info(f"Cache hit for user {user_email}")
+            logger.debug(f"Cache hit for user {user_email}")
             return user_cache[user_email]
         
         # If not in cache, get from Redis
+        logger.debug(f"Cache miss for user {user_email}")
         user_key = f"{USER_PREFIX}{user_email}"
         user_data = redis_client.hgetall(user_key)
         
@@ -124,13 +129,13 @@ def get_user_from_cache_or_redis(user_email, redis_client):
 def update_user_cache(user_email, user_data):
     """Update user cache"""
     with user_cache_lock:
-        logger.info(f"Updating cache for user {user_email}")
+        logger.debug(f"Updating cache for user {user_email}")
         user_cache[user_email] = user_data
 
 def remove_user_from_cache(user_email):
     """Remove user from cache"""
     with user_cache_lock:
-        logger.info(f"Removing user {user_email} from cache")
+        logger.debug(f"Removing user {user_email} from cache")
         user_cache.pop(user_email, None)
 
 def get_user_progress_from_cache_or_redis(user_email, redis_client):
@@ -178,14 +183,14 @@ def update_user_plan_in_cache(user_email, plan_data, redis_client):
         # Directly access cache and Redis
         if user_email in user_cache:
             user_data = user_cache[user_email]
-            logger.info(f"Cache hit for user {user_email} during plan update")
+            logger.debug(f"Cache hit for user {user_email} during plan update")
         else:
             # Get from Redis
             user_data_raw = redis_client.hgetall(user_key)
             if user_data_raw:
                 # Use helper function to decode and parse data
                 user_data = _decode_user_data(user_data_raw)
-                logger.info(f"Cache miss for user {user_email} during plan update")
+                logger.debug(f"Cache miss for user {user_email} during plan update")
             else:
                 user_data = {}
         
@@ -198,7 +203,7 @@ def update_user_plan_in_cache(user_email, plan_data, redis_client):
         # Update cache
         user_cache[user_email] = user_data
         
-        logger.info(f"Updated plan in cache for user {user_email}")
+        logger.debug(f"Updated plan in cache for user {user_email}")
         return user_data
 
 def get_failed_update_from_cache_or_redis(session_id, redis_client):
@@ -206,9 +211,11 @@ def get_failed_update_from_cache_or_redis(session_id, redis_client):
     with payment_cache_lock:
         cache_key = f"failed_update:{session_id}"
         if cache_key in payment_cache:
+            logger.debug(f"Cache hit for failed update {cache_key}")
             return payment_cache[cache_key]
         
         # If not in cache, get from Redis
+        logger.debug(f"Cache miss for failed update {cache_key}")
         failed_data = redis_client.get(cache_key)
         if failed_data:
             failed_update = json.loads(failed_data)
@@ -231,7 +238,7 @@ def update_failed_update_in_cache(session_id, failed_update, expire_seconds, red
         
         # Update cache
         payment_cache[cache_key] = failed_update
-        logger.info(f"Updated failed update in cache for session {session_id}")
+        logger.debug(f"Updated failed update in cache for session {session_id}")
 
 def remove_failed_update_from_cache(session_id, redis_client):
     """Remove failed update from cache and Redis"""
@@ -243,4 +250,4 @@ def remove_failed_update_from_cache(session_id, redis_client):
         
         # Remove from cache
         payment_cache.pop(cache_key, None)
-        logger.info(f"Removed failed update from cache for session {session_id}")
+        logger.debug(f"Removed failed update from cache for session {session_id}")
