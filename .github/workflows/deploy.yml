@@ -34,4 +34,14 @@ jobs:
             docker build -t dictation-studio-service .
             docker stop dictation-studio-service || true
             docker rm dictation-studio-service || true
-            docker run -d --name dictation-studio-service -p 4001:4001 -v ${{ secrets.UPLOADS_DIR }}:${{ secrets.UPLOADS_DIR }} -e REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} -e REDIS_HOST=${{ secrets.REDIS_HOST }} -e REDIS_PORT=${{ secrets.REDIS_PORT }} -e UPLOADS_DIR=${{ secrets.UPLOADS_DIR }} -e STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }} -e STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }} -e STRIPE_SUCCESS_URL=${{ secrets.STRIPE_SUCCESS_URL }} -e STRIPE_CANCEL_URL=${{ secrets.STRIPE_CANCEL_URL }} dictation-studio-service
+            docker run -d --name dictation-studio-service -p 4001:4001 \
+              -v ${{ secrets.UPLOADS_DIR }}:${{ secrets.UPLOADS_DIR }} \
+              -e REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} \
+              -e REDIS_HOST=${{ secrets.REDIS_HOST }} \
+              -e REDIS_PORT=${{ secrets.REDIS_PORT }} \
+              -e UPLOADS_DIR=${{ secrets.UPLOADS_DIR }} \
+              -e STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }} \
+              -e STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }} \
+              -e STRIPE_SUCCESS_URL=${{ secrets.STRIPE_SUCCESS_URL }} \
+              -e STRIPE_CANCEL_URL=${{ secrets.STRIPE_CANCEL_URL }} \
+              dictation-studio-service
