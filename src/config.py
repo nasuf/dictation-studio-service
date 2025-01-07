@@ -3,8 +3,8 @@ import os
 from datetime import timedelta
 
 # Redis Configuration
-REDIS_HOST = '192.210.235.115'
-REDIS_PORT = 6380
+REDIS_HOST = os.getenv('REDIS_HOST')
+REDIS_PORT = os.getenv('REDIS_PORT')
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD')
 
 # Redis Configuration for User Data
