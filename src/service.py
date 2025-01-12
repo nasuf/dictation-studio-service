@@ -322,7 +322,7 @@ class YouTubeChannel(Resource):
                     'image_url': channel_image_url,
                     'visibility': channel_visibility
                 }
-                redis_resource_client.hmset(channel_key, channel_info)
+                redis_resource_client.hset(channel_key, mapping=channel_info)
                 logger.info(f"Saved/updated channel: {channel_id}")
             
             logger.info(f"Successfully saved/updated {len(channels)} channel(s)")
@@ -383,7 +383,7 @@ class YouTubeChannelOperations(Resource):
             decoded_info.update({k: v for k, v in data.items() if v is not None})
             
             # Save updated channel info
-            redis_resource_client.hmset(channel_key, channel_info)
+            redis_resource_client.hmset(channel_key, decoded_info)
             logger.info(f"Successfully updated channel: {channel_id}")
             return {"message": f"Channel {channel_id} updated successfully"}, 200
         
@@ -539,17 +539,22 @@ class YouTubeVideoListByChannel(Resource):
         pattern = f"{VIDEO_PREFIX}{channel_id}:*"
         videos = []
         
-        for key in redis_resource_client.scan_iter(pattern):
-            video_data = redis_resource_client.hgetall(key)
+        for video_key in redis_resource_client.scan_iter(pattern):
+            video_data = redis_resource_client.hgetall(video_key)
+            
             if video_data:
-                if (ignore_visibility == 'false' and video_data[b'visibility'].decode() == 'public') or ignore_visibility == 'true':
-                    videos.append({
-                        "video_id": video_data[b'video_id'].decode(),
-                        "link": video_data[b'link'].decode(),
-                        "title": video_data[b'title'].decode(),
-                        'transcript': json.loads(video_data[b'transcript'].decode())
-                    })
-        
+                if ignore_visibility == 'false' and video_data[b'visibility'].decode() != 'public':
+                    continue
+                # Convert bytes to string
+                video_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in video_data.items()}
+                
+                # Parse JSON fields
+                if 'transcript' in video_data:
+                    video_data['transcript'] = json.loads(video_data['transcript'])
+                if 'original_transcript' in video_data:
+                    video_data['original_transcript'] = json.loads(video_data['original_transcript'])
+                videos.append(video_data)
+
         logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
         return {"channel_id": channel_id, "videos": videos}, 200
 
