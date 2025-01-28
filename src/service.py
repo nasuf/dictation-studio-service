@@ -310,6 +310,7 @@ class YouTubeChannel(Resource):
                 channel_id = channel.get('id')
                 channel_image_url = channel.get('image_url')
                 channel_visibility = channel.get('visibility', 'public')  # Default to 'public' if not provided
+                channel_link = channel.get('link')
                 
                 if not channel_name or not channel_image_url or not channel_id:
                     logger.warning(f"Invalid input for channel {channel_id}")
@@ -320,7 +321,8 @@ class YouTubeChannel(Resource):
                     'id': channel_id,
                     'name': channel_name,
                     'image_url': channel_image_url,
-                    'visibility': channel_visibility
+                    'visibility': channel_visibility,
+                    'link': channel_link
                 }
                 redis_resource_client.hset(channel_key, mapping=channel_info)
                 logger.info(f"Saved/updated channel: {channel_id}")
