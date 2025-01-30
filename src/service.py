@@ -539,10 +539,10 @@ class YouTubeVideoList(Resource):
 @ns.route('/video-list/<string:channel_id>')
 class YouTubeVideoListByChannel(Resource):
     @jwt_required()
-    @ns.doc(params={'ignore_visibility': 'If set to "true", returns all videos regardless of visibility'})
+    @ns.doc(params={'visibility': 'Visibility of the videos to retrieve'})
     def get(self, channel_id):
         """Get video IDs and links for a specific channel"""
-        ignore_visibility = request.args.get('ignore_visibility', 'false')
+        visibility = request.args.get('visibility', VISIBILITY_ALL)
         pattern = f"{VIDEO_PREFIX}{channel_id}:*"
         videos = []
         
@@ -550,7 +550,7 @@ class YouTubeVideoListByChannel(Resource):
             video_data = redis_resource_client.hgetall(video_key)
             
             if video_data:
-                if ignore_visibility == 'false' and video_data[b'visibility'].decode() != 'public':
+                if visibility != VISIBILITY_ALL and video_data[b'visibility'].decode() != visibility:
                     continue
                 # Convert bytes to string
                 video_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in video_data.items()}
