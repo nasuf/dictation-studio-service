@@ -10,7 +10,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import redis
 import requests
 from bs4 import BeautifulSoup
-from config import CHANNEL_PREFIX, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX, REDIS_PASSWORD
+from config import CHANNEL_PREFIX, LANGUAGE_ALL, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX, REDIS_PASSWORD, VISIBILITY_ALL
 from flask_jwt_extended import JWTManager, jwt_required
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 import yt_dlp as youtube_dl
@@ -339,13 +339,16 @@ class YouTubeChannel(Resource):
     def get(self):
         """Get all YouTube channel information from Redis"""
         try:
-            ignore_visibility = request.args.get('ignore_visibility', 'false')
+            visibility = request.args.get('visibility', VISIBILITY_ALL)
+            language = request.args.get('language', LANGUAGE_ALL)
             all_channels = []
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
                 channel_info = redis_resource_client.hgetall(key)
                 channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
                 # if visibility is not public, skip
-                if ignore_visibility == 'false' and channel_data.get('visibility') != 'public':
+                if visibility != VISIBILITY_ALL and channel_data.get('visibility') != visibility:
+                    continue
+                if language != LANGUAGE_ALL and channel_data.get('language') != language:
                     continue
                 all_channels.append(channel_data)
             
