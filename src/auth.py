@@ -3,9 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, create_refresh_token, get_jwt_identity, get_jwt, jwt_required, unset_jwt_cookies
 import logging
 from config import JWT_ACCESS_TOKEN_EXPIRES, JWT_REFRESH_TOKEN_EXPIRES, USER_DICTATION_CONFIG_DEFAULT, USER_LANGUAGE_DEFAULT, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
-from utils import add_token_to_blacklist
-import hashlib
-import os
+from utils import add_token_to_blacklist, hash_password
 import json
 from datetime import datetime, timedelta
 from flask import current_app
@@ -67,23 +65,6 @@ user_info_model = auth_ns.model('UserInfo', {
 })
 
 redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
-
-def hash_password(password):
-    """
-    Perform server-side encryption on the password.
-    """
-    salt = os.urandom(32)
-    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
-    return salt + key
-
-def verify_password(stored_password, provided_password):
-    """
-    Verify the provided password against the stored password.
-    """
-    salt = stored_password[:32]
-    stored_key = stored_password[32:]
-    new_key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
-    return new_key == stored_key
 
 @auth_ns.route('/userinfo')
 class UserInfo(Resource):
