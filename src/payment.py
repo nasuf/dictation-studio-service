@@ -13,7 +13,8 @@ from config import (
     STRIPE_WEBHOOK_SECRET, 
     STRIPE_SUCCESS_URL, 
     STRIPE_CANCEL_URL,
-    USER_PREFIX
+    USER_PREFIX,
+    VERIFICATION_CODE_EXPIRE_SECONDS
 )
 from utils import with_retry
 from celery import shared_task
@@ -23,6 +24,8 @@ import logging
 from functools import wraps
 from werkzeug.local import LocalProxy
 from flask import current_app
+import secrets
+import hashlib
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -55,6 +58,23 @@ payment_model = payment_ns.model('Payment', {
     'duration': fields.Integer(required=True, description='Duration in days'),
     'isRecurring': fields.Boolean(required=True, description='Whether the subscription is recurring')
 })
+
+verification_code_model = payment_ns.model('VerificationCode', {
+    'duration': fields.String(required=True, description='Membership duration (1month, 3months, 6months, permanent)', 
+                             enum=['1month', '3months', '6months', 'permanent'])
+})
+
+verification_model = payment_ns.model('Verification', {
+    'code': fields.String(required=True, description='Verification code to validate')
+})
+
+# Define membership duration mapping (days)
+DURATION_MAPPING = {
+    '1month': 30,
+    '3months': 90,
+    '6months': 180,
+    'permanent': -1  # 使用-1表示永久
+}
 
 redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
 
@@ -416,3 +436,188 @@ def retry_failed_updates(self, session_id):
         logger.error(f"Error in retry task: {str(e)}")
         if self.request.retries < PAYMENT_MAX_RETRY_ATTEMPTS:
             self.retry(countdown=PAYMENT_RETRY_DELAY_SECONDS)
+
+@payment_ns.route('/generate-code')
+class GenerateVerificationCode(Resource):
+    @jwt_required()
+    @payment_ns.expect(verification_code_model)
+    @payment_ns.doc(
+        responses={
+            200: 'Success - Returns verification code',
+            400: 'Invalid Input',
+            401: 'Unauthorized',
+            500: 'Server Error'
+        },
+        description='Generate a verification code for membership duration'
+    )
+    def post(self):
+        """Generate a verification code for membership duration"""
+        try:
+            # 获取管理员身份，但不存储到校验码数据中
+            admin_email = get_jwt_identity()
+            data = request.json
+            duration = data.get('duration')
+
+            if not duration or duration not in DURATION_MAPPING:
+                return {"error": "Invalid duration specified"}, 400
+
+            # 生成随机校验码（16个字符的十六进制字符串）
+            random_part = secrets.token_hex(8)
+            
+            # 创建包含时间戳和会员时长的数据，不包含用户邮箱
+            timestamp = datetime.now().timestamp()
+            code_data = {
+                'timestamp': timestamp,
+                'duration': duration,
+                'days': DURATION_MAPPING[duration]  # 存储实际天数
+            }
+            
+            # 将数据存储到Redis，设置1小时过期
+            code_key = f"verification_code:{random_part}"
+            redis_user_client.setex(
+                code_key,
+                VERIFICATION_CODE_EXPIRE_SECONDS,
+                json.dumps(code_data)
+            )
+            
+            # 生成校验码的哈希部分（用于验证）
+            hash_input = f"{random_part}:{duration}:{timestamp}"
+            hash_part = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+            
+            # 完整的校验码
+            verification_code = f"{random_part}-{hash_part}"
+            
+            logger.info(f"Admin {admin_email} generated verification code for duration: {duration}")
+            return {
+                "code": verification_code,
+                "expiresIn": VERIFICATION_CODE_EXPIRE_SECONDS,
+                "duration": duration,
+                "days": DURATION_MAPPING[duration]
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error generating verification code: {str(e)}")
+            return {"error": "An error occurred while generating verification code"}, 500
+
+@payment_ns.route('/verify-code')
+class VerifyCode(Resource):
+    @jwt_required()
+    @payment_ns.expect(verification_model)
+    @payment_ns.doc(
+        responses={
+            200: 'Success - Code verified and membership applied',
+            400: 'Invalid Input or Code',
+            401: 'Unauthorized',
+            404: 'Code Not Found or Expired',
+            500: 'Server Error'
+        },
+        description='Verify a membership code and apply the membership'
+    )
+    def post(self):
+        """Verify a membership code and apply the membership"""
+        try:
+            user_email = get_jwt_identity()
+            data = request.json
+            code = data.get('code')
+
+            if not code or '-' not in code:
+                return {"error": "Invalid verification code format"}, 400
+            
+            # 解析校验码
+            random_part, hash_part = code.split('-')
+            
+            # 从Redis获取存储的数据
+            code_key = f"verification_code:{random_part}"
+            stored_data = redis_user_client.get(code_key)
+            
+            if not stored_data:
+                return {"error": "Verification code not found or expired"}, 404
+            
+            code_data = json.loads(stored_data)
+            duration = code_data.get('duration')
+            timestamp = code_data.get('timestamp')
+            days_duration = code_data.get('days')
+            
+            # 验证哈希部分
+            hash_input = f"{random_part}:{duration}:{timestamp}"
+            expected_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+            
+            if hash_part != expected_hash:
+                return {"error": "Invalid verification code"}, 400
+            
+            # 应用会员时长
+            plan_name = "Premium"  # 可以根据需要调整
+            
+            # 更新用户计划
+            plan_data = update_user_plan(user_email, plan_name, days_duration, False)
+            
+            # 使用后删除验证码
+            redis_user_client.delete(code_key)
+            
+            logger.info(f"Successfully applied membership for user {user_email}: {plan_data}")
+            return {
+                "message": "Membership successfully applied",
+                "plan": plan_data
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error verifying code: {str(e)}")
+            return {"error": f"An error occurred while verifying code: {str(e)}"}, 500
+
+@payment_ns.route('/verification-codes')
+class VerificationCodes(Resource):
+    @jwt_required()
+    @payment_ns.doc(
+        responses={
+            200: 'Success - Returns all active verification codes',
+            401: 'Unauthorized',
+            403: 'Forbidden - Not an admin',
+            500: 'Server Error'
+        },
+        description='Get all active verification codes (Admin only)'
+    )
+    def get(self):
+        """Get all active verification codes (Admin only)"""
+        try:
+            # 获取用户身份
+            user_email = get_jwt_identity()
+            
+            # 检查用户是否为管理员
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+            
+            if not user_data or user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+                logger.warning(f"Non-admin user {user_email} attempted to access verification codes")
+                return {"error": "Only administrators can access verification codes"}, 403
+            
+            # 获取所有校验码
+            codes = []
+            for key in redis_user_client.scan_iter(match="verification_code:*"):
+                code_data = redis_user_client.get(key)
+                if code_data:
+                    code_info = json.loads(code_data)
+                    random_part = key.decode('utf-8').split(':')[1]
+                    
+                    # 计算过期时间
+                    created_time = datetime.fromtimestamp(code_info.get('timestamp', 0))
+                    expires_at = created_time + timedelta(seconds=VERIFICATION_CODE_EXPIRE_SECONDS)
+                    remaining_seconds = (expires_at - datetime.now()).total_seconds()
+                    
+                    if remaining_seconds > 0:
+                        codes.append({
+                            'code_part': random_part,
+                            'duration': code_info.get('duration'),
+                            'days': code_info.get('days'),
+                            'created_at': created_time.isoformat(),
+                            'expires_at': expires_at.isoformat(),
+                            'remaining_seconds': int(remaining_seconds)
+                        })
+            
+            return {
+                "codes": codes,
+                "count": len(codes)
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving verification codes: {str(e)}")
+            return {"error": f"An error occurred while retrieving verification codes: {str(e)}"}, 500

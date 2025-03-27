@@ -48,3 +48,6 @@ LANGUAGE_ZH = "zh"
 LANGUAGE_JA = "ja"
 LANGUAGE_KO = "ko"
 LANGUAGE_ALL = "all"
+
+# 验证码过期时间（秒）
+VERIFICATION_CODE_EXPIRE_SECONDS = 3600  # 1小时
