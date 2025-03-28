@@ -604,9 +604,17 @@ class VerificationCodes(Resource):
                     remaining_seconds = (expires_at - datetime.now()).total_seconds()
                     
                     if remaining_seconds > 0:
+                        # 生成完整校验码
+                        timestamp = code_info.get('timestamp')
+                        duration = code_info.get('duration')
+                        hash_input = f"{random_part}:{duration}:{timestamp}"
+                        hash_part = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+                        full_code = f"{random_part}-{hash_part}"
+                        
                         codes.append({
                             'code_part': random_part,
-                            'duration': code_info.get('duration'),
+                            'full_code': full_code,  # 添加完整校验码
+                            'duration': duration,
                             'days': code_info.get('days'),
                             'created_at': created_time.isoformat(),
                             'expires_at': expires_at.isoformat(),
