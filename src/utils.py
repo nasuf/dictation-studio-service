@@ -7,12 +7,14 @@ import os
 import json
 import requests
 import hashlib
-from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB, REDIS_PASSWORD
+from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB, REDIS_PASSWORD, REDIS_USER_DB, USER_PREFIX
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp as youtube_dl
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 
 redis_blacklist_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_BLACKLIST_DB, password=REDIS_PASSWORD)
+redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -233,3 +235,117 @@ def verify_password(stored_password, provided_password):
     stored_key = stored_password[32:]
     new_key = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
     return new_key == stored_key
+
+def get_plan_name_by_duration(days_duration):
+    """
+    根据会员天数确定对应的计划名称
+    
+    Args:
+        days_duration (int): 会员时长（天数），-1表示永久
+        
+    Returns:
+        str: 计划名称 (Premium/Pro/Basic/Free)
+    """
+    if days_duration == -1:  # 永久会员
+        return "Premium"
+    elif days_duration >= 90:  # 90天及以上
+        return "Premium"
+    elif days_duration >= 60:  # 60-89天
+        return "Pro"
+    elif days_duration >= 30:  # 30-59天
+        return "Basic"
+    elif days_duration > 0:  # 少于30天但大于0
+        return "Basic"
+    else:  # 0或负数（非-1）
+        return "Free"
+
+def update_user_plan(user_email, plan_name, days_duration, is_recurring=False):
+    """
+    更新用户的会员计划
+    
+    Args:
+        user_email (str): 用户邮箱
+        plan_name (str): 计划名称
+        days_duration (int): 会员时长（天数），-1表示永久
+        is_recurring (bool): 是否为周期性付款
+        
+    Returns:
+        dict: 更新后的计划数据
+    """
+    try:
+        # 获取用户数据
+        user_key = f"{USER_PREFIX}{user_email}"
+        user_data = redis_user_client.hgetall(user_key)
+        
+        if not user_data:
+            raise Exception(f"User {user_email} not found")
+        
+        # 检查用户是否已有计划
+        current_plan_data = {}
+        if b'plan' in user_data:
+            try:
+                current_plan_data = json.loads(user_data[b'plan'].decode('utf-8'))
+            except:
+                logger.warning(f"Could not parse existing plan data for user {user_email}")
+        
+        # 如果是永久会员，直接设置为永久
+        if days_duration == -1:
+            expire_time = datetime.max.isoformat()
+        else:
+            # 如果已有计划且不是永久会员
+            if current_plan_data and 'expireTime' in current_plan_data:
+                current_expire_time = current_plan_data.get('expireTime')
+                
+                # 如果当前是永久会员，保持永久
+                if current_expire_time == datetime.max.isoformat():
+                    expire_time = datetime.max.isoformat()
+                else:
+                    try:
+                        # 解析当前过期时间
+                        current_expire_datetime = datetime.fromisoformat(current_expire_time)
+                        
+                        # 如果当前计划已过期，从现在开始计算
+                        if current_expire_datetime < datetime.now():
+                            expire_time = (datetime.now() + timedelta(days=days_duration)).isoformat()
+                        else:
+                            # 如果当前计划未过期，累加天数
+                            expire_time = (current_expire_datetime + timedelta(days=days_duration)).isoformat()
+                    except:
+                        # 如果解析失败，从现在开始计算
+                        logger.warning(f"Could not parse expire time for user {user_email}, using current time")
+                        expire_time = (datetime.now() + timedelta(days=days_duration)).isoformat()
+            else:
+                # 如果没有现有计划，从现在开始计算
+                expire_time = (datetime.now() + timedelta(days=days_duration)).isoformat()
+        
+        # 根据新的过期时间重新确定计划名称
+        if expire_time == datetime.max.isoformat():
+            # 永久会员使用Premium计划
+            final_plan_name = "Premium"
+        else:
+            try:
+                # 计算从现在到过期时间的天数
+                expire_datetime = datetime.fromisoformat(expire_time)
+                remaining_days = (expire_datetime - datetime.now()).days
+                
+                # 根据剩余天数确定计划名称
+                final_plan_name = get_plan_name_by_duration(remaining_days)
+            except:
+                # 如果计算失败，使用传入的计划名称
+                logger.warning(f"Could not calculate remaining days for user {user_email}, using provided plan name")
+                final_plan_name = plan_name
+        
+        # 创建计划数据
+        plan_data = {
+            'name': final_plan_name,
+            'expireTime': expire_time,
+            'isRecurring': str(is_recurring).lower()
+        }
+        
+        # 保存计划数据
+        redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
+        
+        return plan_data
+    except Exception as e:
+        logger.error(f"Error updating user plan: {str(e)}")
+        raise e

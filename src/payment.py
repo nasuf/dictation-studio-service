@@ -16,7 +16,7 @@ from config import (
     USER_PREFIX,
     VERIFICATION_CODE_EXPIRE_SECONDS
 )
-from utils import with_retry
+from utils import with_retry, get_plan_name_by_duration
 from celery import shared_task
 from datetime import datetime, timedelta
 import json
@@ -699,17 +699,8 @@ class AssignVerificationCode(Resource):
             if hash_part != expected_hash:
                 return {"error": "Invalid verification code"}, 400
             
-            # 根据天数确定计划名称
-            if days_duration == -1:  # 永久会员
-                plan_name = "Premium"
-            elif days_duration >= 90:  # 90天及以上
-                plan_name = "Premium"
-            elif days_duration >= 60:  # 60-89天
-                plan_name = "Pro"
-            elif days_duration >= 30:  # 30-59天
-                plan_name = "Basic"
-            else:  # 少于30天
-                plan_name = "Basic"
+            # 使用工具方法获取计划名称
+            plan_name = get_plan_name_by_duration(days_duration)
             
             # 更新用户计划
             plan_data = update_user_plan(user_email, plan_name, days_duration, False)

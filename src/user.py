@@ -7,6 +7,7 @@ from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
 from datetime import datetime
 from werkzeug.local import LocalProxy
 from flask import current_app
+from utils import get_plan_name_by_duration, update_user_plan
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -556,4 +557,81 @@ class MissedWords(Resource):
         except Exception as e:
             logger.error(f"Error deleting words: {str(e)}")
             return {"error": f"An error occurred while deleting words: {str(e)}"}, 500
+
+@user_ns.route('/update-duration')
+class UpdateUserDuration(Resource):
+    @jwt_required()
+    @user_ns.expect(user_ns.model('UpdateDuration', {
+        'emails': fields.List(fields.String, required=True, description='List of user emails to update'),
+        'duration': fields.Integer(required=True, description='Membership duration in days')
+    }))
+    def post(self):
+        """Update user membership duration (Admin only)"""
+        try:
+            # 获取管理员身份
+            admin_email = get_jwt_identity()
+            
+            # 检查用户是否为管理员
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data:
+                logger.error(f"Admin user not found: {admin_email}")
+                return {"error": "Admin user not found"}, 404
+                
+            # 确保正确解码角色信息
+            admin_role = None
+            if b'role' in admin_data:
+                admin_role = admin_data[b'role'].decode('utf-8')
+            
+            logger.info(f"User {admin_email} with role {admin_role} attempting to update durations")
+            
+            # 修改这里，使用大小写不敏感的比较
+            if admin_role.lower() != 'admin':
+                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
+                return {"error": "Only admin users can update user durations"}, 403
+            
+            # 获取请求数据
+            data = request.json
+            emails = data.get('emails', [])
+            days_duration = data.get('duration')
+            
+            logger.info(f"Admin {admin_email} updating duration for users: {emails} to {days_duration} days")
+            
+            if not emails:
+                return {"error": "No emails provided"}, 400
+                
+            if days_duration is None:
+                return {"error": "Duration is required"}, 400
+            
+            # 使用工具方法获取计划名称
+            plan_name = get_plan_name_by_duration(days_duration)
+            
+            # 更新每个用户的计划
+            results = []
+            for email in emails:
+                try:
+                    # 更新用户计划
+                    plan_data = update_user_plan(email, plan_name, days_duration, False)
+                    results.append({
+                        "email": email,
+                        "success": True,
+                        "plan": plan_data
+                    })
+                except Exception as e:
+                    logger.error(f"Error updating plan for user {email}: {str(e)}")
+                    results.append({
+                        "email": email,
+                        "success": False,
+                        "error": str(e)
+                    })
+            
+            return {
+                "message": f"Updated {sum(1 for r in results if r['success'])} of {len(results)} users",
+                "results": results
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error updating user durations: {str(e)}")
+            return {"error": f"An error occurred while updating user durations: {str(e)}"}, 500
 
