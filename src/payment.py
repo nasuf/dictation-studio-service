@@ -629,3 +629,152 @@ class VerificationCodes(Resource):
         except Exception as e:
             logger.error(f"Error retrieving verification codes: {str(e)}")
             return {"error": f"An error occurred while retrieving verification codes: {str(e)}"}, 500
+
+@payment_ns.route('/assign-code')
+class AssignVerificationCode(Resource):
+    @jwt_required()
+    @payment_ns.expect(payment_ns.model('AssignCode', {
+        'code': fields.String(required=True, description='Verification code to assign'),
+        'userEmail': fields.String(required=True, description='Email of the user to assign the code to')
+    }))
+    @payment_ns.doc(
+        responses={
+            200: 'Success - Code assigned to user',
+            400: 'Invalid Input or Code',
+            401: 'Unauthorized',
+            403: 'Forbidden - Not an admin',
+            404: 'Code Not Found or Expired',
+            500: 'Server Error'
+        },
+        description='Assign a verification code to a specific user (Admin only)'
+    )
+    def post(self):
+        """Assign a verification code to a specific user (Admin only)"""
+        try:
+            # 获取管理员身份
+            admin_email = get_jwt_identity()
+            
+            # 检查用户是否为管理员
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data or admin_data.get(b'role', b'').decode('utf-8') != 'Admin':
+                logger.warning(f"Non-admin user {admin_email} attempted to assign verification code")
+                return {"error": "Only administrators can assign verification codes"}, 403
+            
+            # 获取请求数据
+            data = request.json
+            code = data.get('code')
+            user_email = data.get('userEmail')
+            
+            if not code or not user_email:
+                return {"error": "Verification code and user email are required"}, 400
+            
+            # 验证用户是否存在
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_exists = redis_user_client.exists(user_key)
+            
+            if not user_exists:
+                return {"error": f"User with email {user_email} not found"}, 404
+            
+            # 解析校验码
+            if '-' not in code:
+                return {"error": "Invalid verification code format"}, 400
+                
+            random_part, hash_part = code.split('-')
+            
+            # 从Redis获取存储的数据
+            code_key = f"verification_code:{random_part}"
+            stored_data = redis_user_client.get(code_key)
+            
+            if not stored_data:
+                return {"error": "Verification code not found or expired"}, 404
+            
+            code_data = json.loads(stored_data)
+            duration = code_data.get('duration')
+            timestamp = code_data.get('timestamp')
+            days_duration = code_data.get('days')
+            
+            # 验证哈希部分
+            hash_input = f"{random_part}:{duration}:{timestamp}"
+            expected_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+            
+            if hash_part != expected_hash:
+                return {"error": "Invalid verification code"}, 400
+            
+            # 应用会员时长
+            plan_name = "Premium"  # 可以根据需要调整
+            
+            # 更新用户计划
+            plan_data = update_user_plan(user_email, plan_name, days_duration, False)
+            
+            # 使用后删除验证码
+            redis_user_client.delete(code_key)
+            
+            logger.info(f"Admin {admin_email} assigned membership to user {user_email}: {plan_data}")
+            return {
+                "message": f"Membership successfully assigned to {user_email}",
+                "plan": plan_data
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error assigning verification code: {str(e)}")
+            return {"error": f"An error occurred while assigning verification code: {str(e)}"}, 500
+
+@shared_task(name="check_expired_plans")
+def check_expired_plans():
+    """Check and update expired user plans"""
+    try:
+        current_time = datetime.now()
+        
+        # 获取所有用户
+        for key in redis_user_client.scan_iter(match=f"{USER_PREFIX}*"):
+            user_data = redis_user_client.hgetall(key)
+            
+            if b'plan' in user_data:
+                plan_data = json.loads(user_data[b'plan'].decode('utf-8'))
+                
+                # 检查是否有过期时间
+                if 'expireTime' in plan_data:
+                    try:
+                        # 解析过期时间
+                        expire_time = datetime.fromisoformat(plan_data['expireTime'])
+                        
+                        # 如果是永久会员，跳过
+                        if expire_time == datetime.max:
+                            continue
+                        
+                        # 检查是否已过期
+                        if current_time > expire_time:
+                            # 如果是周期性付款且未取消，不更改状态
+                            if plan_data.get('isRecurring') == 'true' and 'cancelAt' not in plan_data:
+                                continue
+                            
+                            # 更新为免费计划
+                            plan_data = {
+                                'name': 'Free',
+                                'expireTime': None,
+                                'isRecurring': 'false'
+                            }
+                            
+                            # 如果有订阅ID，移除它
+                            if 'stripeSubscriptionId' in plan_data:
+                                del plan_data['stripeSubscriptionId']
+                            
+                            # 如果有取消时间，移除它
+                            if 'cancelAt' in plan_data:
+                                del plan_data['cancelAt']
+                            
+                            # 保存更新后的计划数据
+                            redis_user_client.hset(key, 'plan', json.dumps(plan_data))
+                            
+                            # 记录日志
+                            user_email = key.decode('utf-8').replace(USER_PREFIX, '')
+                            logger.info(f"Plan expired for user {user_email}, reset to Free plan")
+                    except Exception as e:
+                        logger.error(f"Error processing plan expiration for {key}: {str(e)}")
+        
+        return {"message": "Expired plans check completed"}
+    except Exception as e:
+        logger.error(f"Error checking expired plans: {str(e)}")
+        return {"error": f"An error occurred while checking expired plans: {str(e)}"}

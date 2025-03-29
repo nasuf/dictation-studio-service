@@ -9,6 +9,8 @@ COPY src/ ./
 
 RUN mkdir -p /app/uploads && chmod 777 /app/uploads
 
+COPY celerybeat-schedule.py /app/
+
 EXPOSE 4001
 
-CMD ["gunicorn", "--workers", "3", "--bind", "0.0.0.0:4001", "service:app"]
+CMD ["sh", "-c", "gunicorn -w 4 -b 0.0.0.0:5000 app:app & celery -A celery_worker worker --loglevel=info & celery -A celerybeat-schedule beat & wait"]
