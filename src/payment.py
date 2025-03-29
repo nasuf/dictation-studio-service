@@ -699,8 +699,17 @@ class AssignVerificationCode(Resource):
             if hash_part != expected_hash:
                 return {"error": "Invalid verification code"}, 400
             
-            # 应用会员时长
-            plan_name = "Premium"  # 可以根据需要调整
+            # 根据天数确定计划名称
+            if days_duration == -1:  # 永久会员
+                plan_name = "Premium"
+            elif days_duration >= 90:  # 90天及以上
+                plan_name = "Premium"
+            elif days_duration >= 60:  # 60-89天
+                plan_name = "Pro"
+            elif days_duration >= 30:  # 30-59天
+                plan_name = "Basic"
+            else:  # 少于30天
+                plan_name = "Basic"
             
             # 更新用户计划
             plan_data = update_user_plan(user_email, plan_name, days_duration, False)
@@ -708,9 +717,9 @@ class AssignVerificationCode(Resource):
             # 使用后删除验证码
             redis_user_client.delete(code_key)
             
-            logger.info(f"Admin {admin_email} assigned membership to user {user_email}: {plan_data}")
+            logger.info(f"Admin {admin_email} assigned {plan_name} membership to user {user_email} for {days_duration} days")
             return {
-                "message": f"Membership successfully assigned to {user_email}",
+                "message": f"{plan_name} membership successfully assigned to {user_email} for {days_duration} days",
                 "plan": plan_data
             }, 200
 
