@@ -60,8 +60,8 @@ payment_model = payment_ns.model('Payment', {
 })
 
 verification_code_model = payment_ns.model('VerificationCode', {
-    'duration': fields.String(required=True, description='Membership duration (1month, 3months, 6months, permanent)', 
-                             enum=['1month', '3months', '6months', 'permanent'])
+    'duration': fields.String(required=True, description='Membership duration (30days, 60days, 90days, permanent)', 
+                             enum=['30days', '60days', '90days', 'permanent'])
 })
 
 verification_model = payment_ns.model('Verification', {
@@ -70,9 +70,9 @@ verification_model = payment_ns.model('Verification', {
 
 # Define membership duration mapping (days)
 DURATION_MAPPING = {
-    '1month': 30,
-    '3months': 90,
-    '6months': 180,
+    '30days': 30,
+    '60days': 60,
+    '90days': 90,
     'permanent': -1  # 使用-1表示永久
 }
 
@@ -453,7 +453,7 @@ class GenerateVerificationCode(Resource):
     def post(self):
         """Generate a verification code for membership duration"""
         try:
-            # 获取管理员身份，但不存储到校验码数据中
+            # 获取管理员身份
             admin_email = get_jwt_identity()
             data = request.json
             duration = data.get('duration')
@@ -461,10 +461,10 @@ class GenerateVerificationCode(Resource):
             if not duration or duration not in DURATION_MAPPING:
                 return {"error": "Invalid duration specified"}, 400
 
-            # 生成随机校验码（16个字符的十六进制字符串）
+            # 生成随机校验码
             random_part = secrets.token_hex(8)
             
-            # 创建包含时间戳和会员时长的数据，不包含用户邮箱
+            # 创建包含时间戳和会员时长的数据
             timestamp = datetime.now().timestamp()
             code_data = {
                 'timestamp': timestamp,
@@ -480,24 +480,21 @@ class GenerateVerificationCode(Resource):
                 json.dumps(code_data)
             )
             
-            # 生成校验码的哈希部分（用于验证）
+            # 生成校验码的哈希部分
             hash_input = f"{random_part}:{duration}:{timestamp}"
             hash_part = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
             
             # 完整的校验码
-            verification_code = f"{random_part}-{hash_part}"
+            full_code = f"{random_part}-{hash_part}"
             
-            logger.info(f"Admin {admin_email} generated verification code for duration: {duration}")
             return {
-                "code": verification_code,
-                "expiresIn": VERIFICATION_CODE_EXPIRE_SECONDS,
-                "duration": duration,
-                "days": DURATION_MAPPING[duration]
+                "code": full_code,
+                "expires_in": VERIFICATION_CODE_EXPIRE_SECONDS
             }, 200
 
         except Exception as e:
             logger.error(f"Error generating verification code: {str(e)}")
-            return {"error": "An error occurred while generating verification code"}, 500
+            return {"error": f"An error occurred while generating verification code: {str(e)}"}, 500
 
 @payment_ns.route('/verify-code')
 class VerifyCode(Resource):
@@ -778,3 +775,69 @@ def check_expired_plans():
     except Exception as e:
         logger.error(f"Error checking expired plans: {str(e)}")
         return {"error": f"An error occurred while checking expired plans: {str(e)}"}
+
+# 如果需要自定义天数，可以添加一个新的模型
+custom_verification_code_model = payment_ns.model('CustomVerificationCode', {
+    'days': fields.Integer(required=True, description='Custom membership duration in days')
+})
+
+# 添加自定义天数的API（可选）
+@payment_ns.route('/generate-custom-code')
+class GenerateCustomVerificationCode(Resource):
+    @jwt_required()
+    @payment_ns.expect(custom_verification_code_model)
+    @payment_ns.doc(
+        responses={
+            200: 'Success - Returns verification code',
+            400: 'Invalid Input',
+            401: 'Unauthorized',
+            500: 'Server Error'
+        },
+        description='Generate a verification code with custom duration in days'
+    )
+    def post(self):
+        """Generate a verification code with custom duration in days"""
+        try:
+            # 获取管理员身份
+            admin_email = get_jwt_identity()
+            data = request.json
+            days = data.get('days')
+
+            if not days or not isinstance(days, int) or days <= 0:
+                return {"error": "Invalid days specified. Must be a positive integer."}, 400
+
+            # 生成随机校验码
+            random_part = secrets.token_hex(8)
+            
+            # 创建包含时间戳和会员时长的数据
+            timestamp = datetime.now().timestamp()
+            duration = f"custom_{days}days"
+            code_data = {
+                'timestamp': timestamp,
+                'duration': duration,
+                'days': days  # 存储实际天数
+            }
+            
+            # 将数据存储到Redis，设置1小时过期
+            code_key = f"verification_code:{random_part}"
+            redis_user_client.setex(
+                code_key,
+                VERIFICATION_CODE_EXPIRE_SECONDS,
+                json.dumps(code_data)
+            )
+            
+            # 生成校验码的哈希部分
+            hash_input = f"{random_part}:{duration}:{timestamp}"
+            hash_part = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+            
+            # 完整的校验码
+            full_code = f"{random_part}-{hash_part}"
+            
+            return {
+                "code": full_code,
+                "expires_in": VERIFICATION_CODE_EXPIRE_SECONDS
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error generating custom verification code: {str(e)}")
+            return {"error": f"An error occurred while generating custom verification code: {str(e)}"}, 500
