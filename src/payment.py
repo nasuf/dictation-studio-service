@@ -73,7 +73,7 @@ DURATION_MAPPING = {
     '30days': 30,
     '60days': 60,
     '90days': 90,
-    'permanent': -1  # 使用-1表示永久
+    'permanent': 365 * 100  # 使用365 * 100表示永久
 }
 
 redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])

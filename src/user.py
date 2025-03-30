@@ -634,4 +634,3 @@ class UpdateUserDuration(Resource):
         except Exception as e:
             logger.error(f"Error updating user durations: {str(e)}")
             return {"error": f"An error occurred while updating user durations: {str(e)}"}, 500
-

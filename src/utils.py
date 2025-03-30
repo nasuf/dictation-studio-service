@@ -349,3 +349,21 @@ def update_user_plan(user_email, plan_name, days_duration, is_recurring=False):
     except Exception as e:
         logger.error(f"Error updating user plan: {str(e)}")
         raise e
+
+def is_plan_valid(user_info):
+    """Check if user's plan is valid"""
+    # If user has permanent plan, always return True
+    if user_info.get("isPermanent", False):
+        return True
+    
+    # Check expiration time for non-permanent plans
+    expire_time = user_info.get("expireTime")
+    if not expire_time:
+        return False
+    
+    try:
+        expire_date = datetime.fromisoformat(expire_time)
+        current_time = datetime.now()
+        return expire_date > current_time
+    except (ValueError, TypeError):
+        return False
