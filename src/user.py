@@ -4,7 +4,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 import json
 import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.local import LocalProxy
 from flask import current_app
 from utils import get_plan_name_by_duration, update_user_plan
@@ -48,6 +48,219 @@ user_config_model = user_ns.model('UserConfig', {
 missed_words_model = user_ns.model('MissedWords', {
     'words': fields.List(fields.String, required=True, description='Array of missed words')
 })
+
+def check_dictation_quota(user_id, channel_id, video_id):
+    """
+    Check if a user has sufficient dictation quota
+    
+    Args:
+        user_id (str): User ID
+        channel_id (str): Channel ID
+        video_id (str): Video ID
+        
+    Returns:
+        dict: Dictionary containing quota information
+    """
+    user_key = f"{USER_PREFIX}{user_id}"
+    user_data = redis_user_client.hgetall(user_key)
+    
+    # Get user plan information
+    plan_info = None
+    if user_data and b'plan' in user_data:
+        try:
+            plan_info = json.loads(user_data[b'plan'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            plan_info = None
+    
+    # If user has any plan, no limit
+    if plan_info and plan_info.get("name"):
+        return {
+            "used": 0,
+            "limit": -1,  # Use -1 to represent unlimited
+            "canProceed": True
+        }
+    
+    # Video key
+    video_key = f"{channel_id}:{video_id}"
+    
+    # Get quota information from user data
+    quota_info = None
+    if user_data and b'quota' in user_data:
+        try:
+            quota_info = json.loads(user_data[b'quota'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            quota_info = None
+    
+    # If no quota information, initialize
+    if not quota_info:
+        quota_info = {
+            "first_use_time": datetime.now().isoformat(),
+            "videos": [],
+            "history": []
+        }
+    
+    # Check if current video is already in history
+    video_in_history = video_key in quota_info.get("history", [])
+    
+    # Get first use time
+    try:
+        first_use_time = datetime.fromisoformat(quota_info["first_use_time"])
+    except (ValueError, KeyError):
+        first_use_time = datetime.now()
+        quota_info["first_use_time"] = first_use_time.isoformat()
+    
+    now = datetime.now()
+    
+    # Calculate end date of 30-day period
+    end_date = first_use_time + timedelta(days=30)
+    
+    # If current time has passed end date, reset first use time and quota
+    if now > end_date:
+        # Calculate how many complete 30-day cycles have passed
+        days_passed = (now - first_use_time).days
+        cycles = days_passed // 30
+        
+        # Update first use time to start of most recent cycle
+        first_use_time = first_use_time + timedelta(days=cycles * 30)
+        quota_info["first_use_time"] = first_use_time.isoformat()
+        
+        # Update end date
+        end_date = first_use_time + timedelta(days=30)
+        
+        # Clear quota records for current cycle (keep history records)
+        quota_info["videos"] = []
+    
+    # Get user's used quota for current cycle
+    used_videos = quota_info.get("videos", [])
+    used_count = len(used_videos)
+    
+    # If video is already in history, allow continue but don't count in used quota
+    if video_in_history:
+        return {
+            "used": used_count,
+            "limit": 4,
+            "canProceed": True,
+            "startDate": first_use_time.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d")
+        }
+    
+    # If not reached limit, can proceed
+    if used_count < 4:
+        return {
+            "used": used_count,
+            "limit": 4,
+            "canProceed": True,
+            "startDate": first_use_time.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d")
+        }
+    else:
+        return {
+            "used": used_count,
+            "limit": 4,
+            "canProceed": False,
+            "startDate": first_use_time.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d")
+        }
+
+def register_dictation_video(user_id, channel_id, video_id):
+    """
+    Register a video to user's dictation quota
+    
+    Args:
+        user_id (str): User ID
+        channel_id (str): Channel ID
+        video_id (str): Video ID
+        
+    Returns:
+        bool: Whether registration was successful
+    """
+    logger.info(f"Registering video for user {user_id}")
+    
+    user_key = f"{USER_PREFIX}{user_id}"
+    user_data = redis_user_client.hgetall(user_key)
+    
+    # Get user plan information
+    plan_info = None
+    if user_data and b'plan' in user_data:
+        try:
+            plan_info = json.loads(user_data[b'plan'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            plan_info = None
+    
+    # If user has any plan, no need to register, return success directly
+    if plan_info and plan_info.get("name"):
+        return True
+    
+    video_key = f"{channel_id}:{video_id}"
+    
+    # Get quota information from user data
+    quota_info = None
+    if user_data and b'quota' in user_data:
+        try:
+            quota_info = json.loads(user_data[b'quota'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            quota_info = None
+    
+    # If no quota information, initialize
+    if not quota_info:
+        quota_info = {
+            "first_use_time": datetime.now().isoformat(),
+            "videos": [],
+            "history": []
+        }
+    
+    # Check if video is already in history
+    if video_key in quota_info.get("history", []):
+        return True
+    
+    # Get first use time
+    try:
+        first_use_time = datetime.fromisoformat(quota_info["first_use_time"])
+    except (ValueError, KeyError):
+        first_use_time = datetime.now()
+        quota_info["first_use_time"] = first_use_time.isoformat()
+    
+    now = datetime.now()
+    
+    # Calculate end date of 30-day period
+    end_date = first_use_time + timedelta(days=30)
+    
+    # If current time has passed end date, reset first use time and quota
+    if now > end_date:
+        # Calculate how many complete 30-day cycles have passed
+        days_passed = (now - first_use_time).days
+        cycles = days_passed // 30
+        
+        # Update first use time to start of most recent cycle
+        first_use_time = first_use_time + timedelta(days=cycles * 30)
+        quota_info["first_use_time"] = first_use_time.isoformat()
+        
+        # Clear quota records for current cycle (keep history records)
+        quota_info["videos"] = []
+    
+    # Get user's used quota for current cycle
+    used_videos = quota_info.get("videos", [])
+    used_count = len(used_videos)
+    
+    # If limit reached, return failure
+    if used_count >= 4:
+        return False
+    
+    # Add video to current cycle quota list
+    if video_key not in used_videos:
+        used_videos.append(video_key)
+        quota_info["videos"] = used_videos
+    
+    # Add video to permanent history record
+    history = quota_info.get("history", [])
+    if video_key not in history:
+        history.append(video_key)
+        quota_info["history"] = history
+    
+    # Save updated quota information to user record
+    redis_user_client.hset(user_key, "quota", json.dumps(quota_info))
+    
+    return True
 
 @user_ns.route('/progress')
 class DictationProgress(Resource):
@@ -568,10 +781,10 @@ class UpdateUserDuration(Resource):
     def post(self):
         """Update user membership duration (Admin only)"""
         try:
-            # 获取管理员身份
+            # Get admin identity
             admin_email = get_jwt_identity()
             
-            # 检查用户是否为管理员
+            # Check if user is admin
             admin_key = f"{USER_PREFIX}{admin_email}"
             admin_data = redis_user_client.hgetall(admin_key)
             
@@ -579,19 +792,19 @@ class UpdateUserDuration(Resource):
                 logger.error(f"Admin user not found: {admin_email}")
                 return {"error": "Admin user not found"}, 404
                 
-            # 确保正确解码角色信息
+            # Ensure role information is correctly decoded
             admin_role = None
             if b'role' in admin_data:
                 admin_role = admin_data[b'role'].decode('utf-8')
             
             logger.info(f"User {admin_email} with role {admin_role} attempting to update durations")
             
-            # 修改这里，使用大小写不敏感的比较
+            # Use case-insensitive comparison here
             if admin_role.lower() != 'admin':
                 logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
                 return {"error": "Only admin users can update user durations"}, 403
             
-            # 获取请求数据
+            # Get request data
             data = request.json
             emails = data.get('emails', [])
             days_duration = data.get('duration')
@@ -604,14 +817,14 @@ class UpdateUserDuration(Resource):
             if days_duration is None:
                 return {"error": "Duration is required"}, 400
             
-            # 使用工具方法获取计划名称
+            # Use utility method to get plan name
             plan_name = get_plan_name_by_duration(days_duration)
             
-            # 更新每个用户的计划
+            # Update plan for each user
             results = []
             for email in emails:
                 try:
-                    # 更新用户计划
+                    # Update user plan
                     plan_data = update_user_plan(email, plan_name, days_duration, False)
                     results.append({
                         "email": email,
@@ -634,3 +847,56 @@ class UpdateUserDuration(Resource):
         except Exception as e:
             logger.error(f"Error updating user durations: {str(e)}")
             return {"error": f"An error occurred while updating user durations: {str(e)}"}, 500
+
+@user_ns.route('/dictation_quota')
+class DictationQuota(Resource):
+    @jwt_required()
+    @user_ns.doc(params={'channelId': 'Channel ID', 'videoId': 'Video ID'}, 
+                 responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
+    def get(self):
+        """Check user's dictation quota"""
+        try:
+            user_email = get_jwt_identity()
+            channel_id = request.args.get('channelId')
+            video_id = request.args.get('videoId')
+            
+            if not channel_id or not video_id:
+                return {"error": "Missing channelId or videoId"}, 400
+            
+            quota_info = check_dictation_quota(user_email, channel_id, video_id)
+            return quota_info, 200
+            
+        except Exception as e:
+            logger.error(f"Error checking dictation quota: {str(e)}")
+            return {"error": f"An error occurred: {str(e)}"}, 500
+
+@user_ns.route('/register_dictation')
+class RegisterDictation(Resource):
+    @jwt_required()
+    @user_ns.expect(user_ns.model('RegisterDictation', {
+        'channelId': fields.String(required=True, description='Channel ID'),
+        'videoId': fields.String(required=True, description='Video ID')
+    }))
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Quota Exceeded', 500: 'Server Error'})
+    def post(self):
+        """Register a video to user's dictation quota"""
+        try:
+            user_email = get_jwt_identity()
+            data = request.json
+            
+            channel_id = data.get('channelId')
+            video_id = data.get('videoId')
+            
+            if not channel_id or not video_id:
+                return {"error": "Missing channelId or videoId"}, 400
+            
+            success = register_dictation_video(user_email, channel_id, video_id)
+            
+            if success:
+                return {"status": "success"}, 200
+            else:
+                return {"error": "Failed to register video, quota exceeded"}, 403
+                
+        except Exception as e:
+            logger.error(f"Error registering dictation video: {str(e)}")
+            return {"error": f"An error occurred: {str(e)}"}, 500

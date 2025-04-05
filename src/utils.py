@@ -238,117 +238,131 @@ def verify_password(stored_password, provided_password):
 
 def get_plan_name_by_duration(days_duration):
     """
-    根据会员天数确定对应的计划名称
+    Determine the plan name based on membership duration in days
     
     Args:
-        days_duration (int): 会员时长（天数），-1表示永久
+        days_duration (int): Membership duration in days, -1 indicates permanent/lifetime
         
     Returns:
-        str: 计划名称 (Premium/Pro/Basic/Free)
+        str: Plan name (Premium/Pro/Basic/Free)
     """
-    if days_duration == -1:  # 永久会员
+    if days_duration == -1:  # Permanent/lifetime membership
         return "Premium"
-    elif days_duration >= 90:  # 90天及以上
+    elif days_duration >= 90:  # 90 days or more
         return "Premium"
-    elif days_duration >= 60:  # 60-89天
+    elif days_duration >= 60:  # 60-89 days
         return "Pro"
-    elif days_duration >= 30:  # 30-59天
+    elif days_duration >= 30:  # 30-59 days
         return "Basic"
-    elif days_duration > 0:  # 少于30天但大于0
+    elif days_duration > 0:  # Less than 30 days but greater than 0
         return "Basic"
-    else:  # 0或负数（非-1）
+    else:  # 0 or negative (except -1)
         return "Free"
 
-def update_user_plan(user_email, plan_name, days_duration, is_recurring=False):
+def update_user_plan(redis_client, user_email, plan_name, days, from_order=None, from_code=None):
     """
-    更新用户的会员计划
+    Update user's membership plan
     
     Args:
-        user_email (str): 用户邮箱
-        plan_name (str): 计划名称
-        days_duration (int): 会员时长（天数），-1表示永久
-        is_recurring (bool): 是否为周期性付款
-        
+        user_email (str): User's email
+        plan_name (str): Plan name (basic, standard, premium, lifetime)
+        days (int): Number of days to add to existing plan
+        from_order (str, optional): Order number that triggered this update
+        from_code (str, optional): Verification code that triggered this update
+    
     Returns:
-        dict: 更新后的计划数据
+        dict: Updated user data
     """
-    try:
-        # 获取用户数据
-        user_key = f"{USER_PREFIX}{user_email}"
-        user_data = redis_user_client.hgetall(user_key)
-        
-        if not user_data:
-            raise Exception(f"User {user_email} not found")
-        
-        # 检查用户是否已有计划
-        current_plan_data = {}
-        if b'plan' in user_data:
-            try:
-                current_plan_data = json.loads(user_data[b'plan'].decode('utf-8'))
-            except:
-                logger.warning(f"Could not parse existing plan data for user {user_email}")
-        
-        # 如果是永久会员，直接设置为永久
-        if days_duration == -1:
-            expire_time = datetime.max.isoformat()
-        else:
-            # 如果已有计划且不是永久会员
-            if current_plan_data and 'expireTime' in current_plan_data:
-                current_expire_time = current_plan_data.get('expireTime')
-                
-                # 如果当前是永久会员，保持永久
-                if current_expire_time == datetime.max.isoformat():
-                    expire_time = datetime.max.isoformat()
-                else:
-                    try:
-                        # 解析当前过期时间
-                        current_expire_datetime = datetime.fromisoformat(current_expire_time)
-                        
-                        # 如果当前计划已过期，从现在开始计算
-                        if current_expire_datetime < datetime.now():
-                            expire_time = (datetime.now() + timedelta(days=days_duration)).isoformat()
-                        else:
-                            # 如果当前计划未过期，累加天数
-                            expire_time = (current_expire_datetime + timedelta(days=days_duration)).isoformat()
-                    except:
-                        # 如果解析失败，从现在开始计算
-                        logger.warning(f"Could not parse expire time for user {user_email}, using current time")
-                        expire_time = (datetime.now() + timedelta(days=days_duration)).isoformat()
+    user_key = f"{USER_PREFIX}{user_email}"
+    
+    # Get user data
+    user_data = redis_client.hgetall(user_key)
+    if not user_data:
+        return None
+    
+    user_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items()}
+    
+    # Check if user already has a plan
+    current_plan = user_data.get('plan', 'basic')
+    original_plan = current_plan
+    
+    now = datetime.now()
+    new_expire_time = now
+    
+    # If it's a lifetime membership, set as lifetime directly
+    if plan_name == 'lifetime':
+        user_data['plan'] = 'lifetime'
+        user_data['expire_time'] = 'lifetime'
+    else:
+        # If user already has a plan and it's not lifetime
+        if current_plan != 'basic':
+            # If current plan is lifetime, keep it as lifetime
+            if current_plan == 'lifetime':
+                user_data['plan'] = 'lifetime'
+                user_data['expire_time'] = 'lifetime'
             else:
-                # 如果没有现有计划，从现在开始计算
-                expire_time = (datetime.now() + timedelta(days=days_duration)).isoformat()
-        
-        # 根据新的过期时间重新确定计划名称
-        if expire_time == datetime.max.isoformat():
-            # 永久会员使用Premium计划
-            final_plan_name = "Premium"
+                # Parse current expiration time
+                current_expire_time = user_data.get('expire_time')
+                try:
+                    # If current plan has expired, calculate from now
+                    expire_time = datetime.fromisoformat(current_expire_time)
+                    if expire_time < now:
+                        new_expire_time = now + timedelta(days=days)
+                    else:
+                        # If current plan hasn't expired, add days
+                        new_expire_time = expire_time + timedelta(days=days)
+                except:
+                    # If parsing fails, calculate from now
+                    new_expire_time = now + timedelta(days=days)
         else:
+            # If no existing plan, calculate from now
+            new_expire_time = now + timedelta(days=days)
+            
+        # Determine plan name based on new expiration time
+        if plan_name == 'basic':
+            user_data['plan'] = 'basic'
+        else:
+            # Calculate days from now to expiration date
             try:
-                # 计算从现在到过期时间的天数
-                expire_datetime = datetime.fromisoformat(expire_time)
-                remaining_days = (expire_datetime - datetime.now()).days
-                
-                # 根据剩余天数确定计划名称
-                final_plan_name = get_plan_name_by_duration(remaining_days)
+                remaining_days = (new_expire_time - now).days
+                if remaining_days >= 365 * 5:  # 5 years or more
+                    user_data['plan'] = 'lifetime'
+                    user_data['expire_time'] = 'lifetime'
+                    return user_data
             except:
-                # 如果计算失败，使用传入的计划名称
-                logger.warning(f"Could not calculate remaining days for user {user_email}, using provided plan name")
-                final_plan_name = plan_name
-        
-        # 创建计划数据
-        plan_data = {
-            'name': final_plan_name,
-            'expireTime': expire_time,
-            'isRecurring': str(is_recurring).lower()
-        }
-        
-        # 保存计划数据
-        redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
-        
-        return plan_data
-    except Exception as e:
-        logger.error(f"Error updating user plan: {str(e)}")
-        raise e
+                # If calculation fails, use provided plan name
+                pass
+                
+            user_data['plan'] = plan_name
+            user_data['expire_time'] = new_expire_time.isoformat()
+    
+    # Record the plan update history
+    update_history = user_data.get('plan_update_history', '[]')
+    try:
+        history = json.loads(update_history)
+    except:
+        history = []
+    
+    update_record = {
+        'time': now.isoformat(),
+        'from': original_plan,
+        'to': user_data['plan'],
+        'days_added': days
+    }
+    
+    if from_order:
+        update_record['order_id'] = from_order
+    
+    if from_code:
+        update_record['code'] = from_code
+    
+    history.append(update_record)
+    user_data['plan_update_history'] = json.dumps(history)
+    
+    # Update in Redis
+    redis_client.hmset(user_key, user_data)
+    
+    return user_data
 
 def is_plan_valid(user_info):
     """Check if user's plan is valid"""
