@@ -49,6 +49,11 @@ missed_words_model = user_ns.model('MissedWords', {
     'words': fields.List(fields.String, required=True, description='Array of missed words')
 })
 
+# Add new structured missed words model
+structured_missed_words_model = user_ns.model('StructuredMissedWords', {
+    'words': fields.Raw(required=True, description='Object of missed words grouped by language')
+})
+
 def check_dictation_quota(user_id, channel_id, video_id):
     """
     Check if a user has sufficient dictation quota
@@ -689,20 +694,69 @@ class MissedWords(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            # Get existing missed words or initialize empty set
-            missed_words = set(json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8')))
+            # Detect language for each word
+            def detect_word_language(word):
+                if not word:
+                    return "other"
+                    
+                char_code = ord(word[0])
+                
+                # Chinese character range
+                if 0x4e00 <= char_code <= 0x9fff:
+                    return "zh"
+                # Japanese character ranges (Hiragana, Katakana)
+                elif (0x3040 <= char_code <= 0x309f) or (0x30a0 <= char_code <= 0x30ff):
+                    return "ja"
+                # Korean character range (Hangul)
+                elif 0xac00 <= char_code <= 0xd7a3:
+                    return "ko"
+                # Basic Latin alphabet and common English characters
+                elif (0x0020 <= char_code <= 0x007f) or (0x0080 <= char_code <= 0x00ff):
+                    return "en"
+                # Other languages/scripts
+                else:
+                    return "other"
+
+            # Get existing missed words structure or initialize empty object
+            missed_words_json = user_data.get(b'missed_words', b'[]').decode('utf-8')
+            try:
+                # Try to parse as structured object first
+                missed_words_struct = json.loads(missed_words_json)
+                if not isinstance(missed_words_struct, dict):
+                    # If it's the old list format, convert to structured format
+                    old_words = missed_words_struct if isinstance(missed_words_struct, list) else []
+                    missed_words_struct = {}
+                    
+                    # Group existing words by language
+                    for word in old_words:
+                        lang = detect_word_language(word)
+                        if lang not in missed_words_struct:
+                            missed_words_struct[lang] = []
+                        if word not in missed_words_struct[lang]:
+                            missed_words_struct[lang].append(word)
+            except json.JSONDecodeError:
+                # Initialize empty structure if parsing fails
+                missed_words_struct = {}
             
-            # Add new words (set will automatically handle duplicates)
-            missed_words.update(words_data['words'])
+            # Add new words to appropriate language categories
+            for word in words_data['words']:
+                lang = detect_word_language(word)
+                if lang not in missed_words_struct:
+                    missed_words_struct[lang] = []
+                if word not in missed_words_struct[lang]:
+                    missed_words_struct[lang].append(word)
             
-            # Convert back to list and store
-            missed_words_list = list(missed_words)
-            redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_list))
+            # Store the updated structure
+            redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_struct))
+
+            # Create flattened list for backward compatibility
+            flattened_words = [word for lang_words in missed_words_struct.values() for word in lang_words]
 
             logger.info(f"Updated missed words for user: {user_email}")
             return {
                 "message": "Missed words updated successfully",
-                "missed_words": missed_words_list
+                "missed_words": flattened_words,
+                "structured_missed_words": missed_words_struct
             }, 200
 
         except Exception as e:
@@ -721,14 +775,69 @@ class MissedWords(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            # Get missed words or return empty list if none exist
-            missed_words = json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8'))
-
-            logger.info(f"Retrieved missed words for user: {user_email}")
-            return {
-                "missed_words": missed_words
-            }, 200
-
+            # Get missed words data
+            missed_words_json = user_data.get(b'missed_words', b'[]').decode('utf-8')
+            
+            try:
+                # Try to parse as structured object first
+                missed_words = json.loads(missed_words_json)
+                
+                # If it's not a dictionary (old format), convert to structured format
+                if not isinstance(missed_words, dict):
+                    old_words = missed_words if isinstance(missed_words, list) else []
+                    structured_words = {}
+                    
+                    # Function to detect language
+                    def detect_word_language(word):
+                        if not word:
+                            return "other"
+                            
+                        char_code = ord(word[0])
+                        
+                        # Chinese character range
+                        if 0x4e00 <= char_code <= 0x9fff:
+                            return "zh"
+                        # Japanese character ranges (Hiragana, Katakana)
+                        elif (0x3040 <= char_code <= 0x309f) or (0x30a0 <= char_code <= 0x30ff):
+                            return "ja"
+                        # Korean character range (Hangul)
+                        elif 0xac00 <= char_code <= 0xd7a3:
+                            return "ko"
+                        # Basic Latin alphabet and common English characters
+                        elif (0x0020 <= char_code <= 0x007f) or (0x0080 <= char_code <= 0x00ff):
+                            return "en"
+                        # Other languages/scripts
+                        else:
+                            return "other"
+                    
+                    # Group words by language
+                    for word in old_words:
+                        lang = detect_word_language(word)
+                        if lang not in structured_words:
+                            structured_words[lang] = []
+                        structured_words[lang].append(word)
+                    
+                    # Save the structured format
+                    redis_user_client.hset(user_key, 'missed_words', json.dumps(structured_words))
+                    missed_words = structured_words
+                
+                # Create flattened list for backward compatibility
+                flattened_words = [word for lang_words in missed_words.values() for word in lang_words]
+                
+                logger.info(f"Retrieved missed words for user: {user_email}")
+                return {
+                    "missed_words": flattened_words,
+                    "structured_missed_words": missed_words
+                }, 200
+                
+            except json.JSONDecodeError:
+                # Return empty structures if parsing fails
+                logger.warning(f"Failed to parse missed words for user: {user_email}")
+                return {
+                    "missed_words": [],
+                    "structured_missed_words": {}
+                }, 200
+                
         except Exception as e:
             logger.error(f"Error retrieving missed words: {str(e)}")
             return {"error": f"An error occurred while retrieving missed words: {str(e)}"}, 500
@@ -751,22 +860,56 @@ class MissedWords(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            # Get existing missed words
-            missed_words = set(json.loads(user_data.get(b'missed_words', b'[]').decode('utf-8')))
+            # Delete words from structured format
+            words_to_delete = set(words_data['words'])
             
-            # Remove specified words
-            missed_words = missed_words - set(words_data['words'])
+            # Get current missed words structure
+            missed_words_json = user_data.get(b'missed_words', b'[]').decode('utf-8')
             
-            # Convert back to list and store
-            missed_words_list = list(missed_words)
-            redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_list))
-
-            logger.info(f"Deleted specified words for user: {user_email}")
-            return {
-                "message": "Words deleted successfully",
-                "missed_words": missed_words_list
-            }, 200
-
+            try:
+                missed_words_struct = json.loads(missed_words_json)
+                
+                # If it's the old list format, handle differently
+                if not isinstance(missed_words_struct, dict):
+                    old_words = set(missed_words_struct if isinstance(missed_words_struct, list) else [])
+                    updated_words = list(old_words - words_to_delete)
+                    redis_user_client.hset(user_key, 'missed_words', json.dumps(updated_words))
+                    return {
+                        "message": "Words deleted successfully",
+                        "missed_words": updated_words,
+                        "structured_missed_words": {}
+                    }, 200
+                
+                # Remove words from each language category
+                for lang in missed_words_struct:
+                    missed_words_struct[lang] = [word for word in missed_words_struct[lang] 
+                                                if word not in words_to_delete]
+                
+                # Clean up empty language categories
+                missed_words_struct = {lang: words for lang, words in missed_words_struct.items() if words}
+                
+                # Save the updated structure
+                redis_user_client.hset(user_key, 'missed_words', json.dumps(missed_words_struct))
+                
+                # Create flattened list for backward compatibility
+                flattened_words = [word for lang_words in missed_words_struct.values() for word in lang_words]
+                
+                logger.info(f"Deleted specified words for user: {user_email}")
+                return {
+                    "message": "Words deleted successfully",
+                    "missed_words": flattened_words,
+                    "structured_missed_words": missed_words_struct
+                }, 200
+                
+            except json.JSONDecodeError:
+                # Return empty if parsing fails
+                redis_user_client.hset(user_key, 'missed_words', json.dumps({}))
+                return {
+                    "message": "Words deleted successfully",
+                    "missed_words": [],
+                    "structured_missed_words": {}
+                }, 200
+                
         except Exception as e:
             logger.error(f"Error deleting words: {str(e)}")
             return {"error": f"An error occurred while deleting words: {str(e)}"}, 500
