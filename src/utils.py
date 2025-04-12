@@ -356,6 +356,11 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
 
     update_history.append(update_record)
 
+    # 如果用户获得了付费计划（不是Free），删除quota信息
+    if plan_name != 'Free':
+        redis_user_client.hdel(user_key, 'quota')
+        logger.info(f"Deleted quota information for user {user_email} after upgrading to {plan_name} plan")
+
     # 存储计划数据和历史记录到Redis
     redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
     redis_user_client.hset(user_key, 'plan_update_history', json.dumps(update_history))
