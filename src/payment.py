@@ -16,7 +16,7 @@ from config import (
     USER_PREFIX,
     VERIFICATION_CODE_EXPIRE_SECONDS
 )
-from utils import with_retry, get_plan_name_by_duration
+from utils import with_retry, get_plan_name_by_duration, update_user_plan
 from celery import shared_task
 from datetime import datetime, timedelta
 import json
@@ -336,29 +336,6 @@ class CancelSubscription(Resource):
             return {"error": "An error occurred while cancelling subscription"}, 500
 
 @with_retry()
-def update_user_plan(user_email, plan_name, duration, isRecurring):
-    """Update user plan core logic"""
-    user_key = f"{USER_PREFIX}{user_email}"
-
-    # calculate plan expiration time
-    expire_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
-    next_payment_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
-    # create new plan data
-    # if isRecurring, do not set expireTime but set nextPaymentTime
-    # turn isRecurring to boolean
-    isRecurring = isRecurring == 'True'
-    plan_data = {
-        "name": plan_name,
-        "expireTime": expire_time if not isRecurring else None,
-        "nextPaymentTime": next_payment_time if isRecurring else None,
-        "isRecurring": isRecurring,
-        "status": "active"
-    }
-
-    # store plan data to Redis
-    redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
-    return plan_data
-
 def store_failed_update(session_id, user_email, plan_data, error, retry_count=0):
     """Store failed update records"""
     try:
@@ -411,7 +388,7 @@ def retry_failed_updates(self, session_id):
                 failed_update['user_email'],
                 failed_update['plan_data']['name'],
                 failed_update['plan_data']['duration'],
-                failed_update['plan_data']['isRecurring']
+                failed_update['plan_data'].get('isRecurring', False)
             )
             
             # update successful, delete failed records
@@ -698,19 +675,70 @@ class AssignVerificationCode(Resource):
             
             if hash_part != expected_hash:
                 return {"error": "Invalid verification code"}, 400
+
+            # 获取用户当前计划
+            user_data = redis_user_client.hgetall(user_key)
+            current_plan = None
+            if b'plan' in user_data:
+                try:
+                    current_plan = json.loads(user_data[b'plan'].decode('utf-8'))
+                except json.JSONDecodeError:
+                    current_plan = None
+
+            # 使用工具方法获取新计划名称
+            new_plan_name = get_plan_name_by_duration(days_duration)
             
-            # 使用工具方法获取计划名称
-            plan_name = get_plan_name_by_duration(days_duration)
+            # 计算新的计划数据
+            now = datetime.now()
+            new_expire_time = now + timedelta(days=days_duration)
+
+            if current_plan and current_plan.get('expireTime'):
+                try:
+                    current_expire_time = datetime.strptime(current_plan['expireTime'], '%Y-%m-%d %H:%M:%S')
+                    # 如果当前计划未过期，从当前过期时间开始累加
+                    if current_expire_time > now:
+                        new_expire_time = current_expire_time + timedelta(days=days_duration)
+                        
+                    # 确定最终的计划名称（保留较高级别的计划）
+                    current_plan_name = current_plan.get('name', 'Free')
+                    plan_levels = {'Premium': 3, 'Pro': 2, 'Basic': 1, 'Free': 0}
+                    current_level = plan_levels.get(current_plan_name, 0)
+                    new_level = plan_levels.get(new_plan_name, 0)
+                    final_plan_name = current_plan_name if current_level >= new_level else new_plan_name
+                    
+                    # 更新计划数据
+                    plan_data = {
+                        "name": final_plan_name,
+                        "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "isRecurring": False,
+                        "status": "active"
+                    }
+                except (ValueError, TypeError):
+                    # 如果解析当前过期时间失败，使用新计算的值
+                    plan_data = {
+                        "name": new_plan_name,
+                        "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "isRecurring": False,
+                        "status": "active"
+                    }
+            else:
+                # 如果没有当前计划，创建新的计划数据
+                plan_data = {
+                    "name": new_plan_name,
+                    "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "isRecurring": False,
+                    "status": "active"
+                }
             
-            # 更新用户计划
-            plan_data = update_user_plan(user_email, plan_name, days_duration, False)
+            # 保存更新后的计划数据
+            redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
             
             # 使用后删除验证码
             redis_user_client.delete(code_key)
             
-            logger.info(f"Admin {admin_email} assigned {plan_name} membership to user {user_email} for {days_duration} days")
+            logger.info(f"Admin {admin_email} assigned membership to user {user_email}. Plan details: {plan_data}")
             return {
-                "message": f"{plan_name} membership successfully assigned to {user_email} for {days_duration} days",
+                "message": f"Membership successfully assigned to {user_email}",
                 "plan": plan_data
             }, 200
 

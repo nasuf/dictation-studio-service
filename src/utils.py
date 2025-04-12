@@ -259,110 +259,108 @@ def get_plan_name_by_duration(days_duration):
     else:  # 0 or negative (except -1)
         return "Free"
 
-def update_user_plan(redis_client, user_email, plan_name, days, from_order=None, from_code=None):
+def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_order=None, from_code=None):
     """
-    Update user's membership plan
+    Update user's membership plan with comprehensive handling of existing plans
     
     Args:
         user_email (str): User's email
-        plan_name (str): Plan name (basic, standard, premium, lifetime)
-        days (int): Number of days to add to existing plan
+        plan_name (str): Plan name (Premium/Pro/Basic/Free)
+        duration (int): Number of days to add
+        isRecurring (bool): Whether the plan is recurring
         from_order (str, optional): Order number that triggered this update
         from_code (str, optional): Verification code that triggered this update
     
     Returns:
-        dict: Updated user data
+        dict: Updated plan data
     """
     user_key = f"{USER_PREFIX}{user_email}"
     
-    # Get user data
-    user_data = redis_client.hgetall(user_key)
-    if not user_data:
-        return None
-    
-    user_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in user_data.items()}
-    
-    # Check if user already has a plan
-    current_plan = user_data.get('plan', 'basic')
-    original_plan = current_plan
-    
+    # 获取用户当前计划
+    user_data = redis_user_client.hgetall(user_key)
+    current_plan = None
+    if b'plan' in user_data:
+        try:
+            current_plan = json.loads(user_data[b'plan'].decode('utf-8'))
+        except json.JSONDecodeError:
+            current_plan = None
+
+    # 计算新的过期时间
     now = datetime.now()
-    new_expire_time = now
-    
-    # If it's a lifetime membership, set as lifetime directly
-    if plan_name == 'lifetime':
-        user_data['plan'] = 'lifetime'
-        user_data['expire_time'] = 'lifetime'
-    else:
-        # If user already has a plan and it's not lifetime
-        if current_plan != 'basic':
-            # If current plan is lifetime, keep it as lifetime
-            if current_plan == 'lifetime':
-                user_data['plan'] = 'lifetime'
-                user_data['expire_time'] = 'lifetime'
-            else:
-                # Parse current expiration time
-                current_expire_time = user_data.get('expire_time')
-                try:
-                    # If current plan has expired, calculate from now
-                    expire_time = datetime.fromisoformat(current_expire_time)
-                    if expire_time < now:
-                        new_expire_time = now + timedelta(days=days)
-                    else:
-                        # If current plan hasn't expired, add days
-                        new_expire_time = expire_time + timedelta(days=days)
-                except:
-                    # If parsing fails, calculate from now
-                    new_expire_time = now + timedelta(days=days)
-        else:
-            # If no existing plan, calculate from now
-            new_expire_time = now + timedelta(days=days)
+    new_expire_time = now + timedelta(days=duration)
+
+    # 如果有当前计划且未过期，累加时长
+    if current_plan and current_plan.get('expireTime'):
+        try:
+            current_expire_time = datetime.strptime(current_plan['expireTime'], '%Y-%m-%d %H:%M:%S')
+            # 如果当前计划未过期，从当前过期时间开始累加
+            if current_expire_time > now:
+                new_expire_time = current_expire_time + timedelta(days=duration)
             
-        # Determine plan name based on new expiration time
-        if plan_name == 'basic':
-            user_data['plan'] = 'basic'
-        else:
-            # Calculate days from now to expiration date
-            try:
-                remaining_days = (new_expire_time - now).days
-                if remaining_days >= 365 * 5:  # 5 years or more
-                    user_data['plan'] = 'lifetime'
-                    user_data['expire_time'] = 'lifetime'
-                    return user_data
-            except:
-                # If calculation fails, use provided plan name
-                pass
-                
-            user_data['plan'] = plan_name
-            user_data['expire_time'] = new_expire_time.isoformat()
-    
-    # Record the plan update history
-    update_history = user_data.get('plan_update_history', '[]')
-    try:
-        history = json.loads(update_history)
-    except:
-        history = []
-    
+            # 确定最终的计划名称（保留较高级别的计划）
+            current_plan_name = current_plan.get('name', 'Free')
+            plan_levels = {'Premium': 3, 'Pro': 2, 'Basic': 1, 'Free': 0}
+            current_level = plan_levels.get(current_plan_name, 0)
+            new_level = plan_levels.get(plan_name, 0)
+            final_plan_name = current_plan_name if current_level >= new_level else plan_name
+
+            # 保持原有的recurring状态，如果当前是recurring的话
+            isRecurring = current_plan.get('isRecurring', isRecurring)
+            
+            plan_data = {
+                "name": final_plan_name,
+                "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if not isRecurring else None,
+                "nextPaymentTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if isRecurring else None,
+                "isRecurring": isRecurring,
+                "status": "active"
+            }
+        except (ValueError, TypeError):
+            # 如果解析当前过期时间失败，使用新计算的值
+            plan_data = {
+                "name": plan_name,
+                "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if not isRecurring else None,
+                "nextPaymentTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if isRecurring else None,
+                "isRecurring": isRecurring,
+                "status": "active"
+            }
+    else:
+        # 如果没有当前计划，创建新的计划数据
+        plan_data = {
+            "name": plan_name,
+            "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if not isRecurring else None,
+            "nextPaymentTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if isRecurring else None,
+            "isRecurring": isRecurring,
+            "status": "active"
+        }
+
+    # 记录计划更新历史
+    update_history = []
+    if b'plan_update_history' in user_data:
+        try:
+            update_history = json.loads(user_data[b'plan_update_history'].decode('utf-8'))
+        except json.JSONDecodeError:
+            update_history = []
+
+    # 创建更新记录
     update_record = {
         'time': now.isoformat(),
-        'from': original_plan,
-        'to': user_data['plan'],
-        'days_added': days
+        'from': current_plan.get('name', 'Free') if current_plan else 'Free',
+        'to': plan_data['name'],
+        'days_added': duration
     }
-    
+
     if from_order:
         update_record['order_id'] = from_order
-    
     if from_code:
         update_record['code'] = from_code
-    
-    history.append(update_record)
-    user_data['plan_update_history'] = json.dumps(history)
-    
-    # Update in Redis
-    redis_client.hmset(user_key, user_data)
-    
-    return user_data
+
+    update_history.append(update_record)
+
+    # 存储计划数据和历史记录到Redis
+    redis_user_client.hset(user_key, 'plan', json.dumps(plan_data))
+    redis_user_client.hset(user_key, 'plan_update_history', json.dumps(update_history))
+
+    return plan_data
 
 def is_plan_valid(user_info):
     """Check if user's plan is valid"""
