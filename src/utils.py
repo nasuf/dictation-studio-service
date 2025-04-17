@@ -344,8 +344,6 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
     # 创建更新记录
     update_record = {
         'time': now.isoformat(),
-        'from': current_plan.get('name', 'Free') if current_plan else 'Free',
-        'to': plan_data['name'],
         'days_added': duration
     }
 
@@ -397,3 +395,220 @@ def init_quota(user_email):
     }
     redis_user_client.hset(user_key, 'quota', json.dumps(quota))
     return quota
+
+def check_dictation_quota(user_id, channel_id, video_id):
+    """
+    Check if a user has sufficient dictation quota
+    
+    Args:
+        user_id (str): User ID
+        channel_id (str): Channel ID
+        video_id (str): Video ID
+        
+    Returns:
+        dict: Dictionary containing quota information
+    """
+    user_key = f"{USER_PREFIX}{user_id}"
+    user_data = redis_user_client.hgetall(user_key)
+    
+    # Get user plan information
+    plan_info = None
+    if user_data and b'plan' in user_data:
+        try:
+            plan_info = json.loads(user_data[b'plan'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            plan_info = None
+    
+    # If user has any plan, no limit
+    if plan_info and plan_info.get("name"):
+        return {
+            "used": 0,
+            "limit": -1,  # Use -1 to represent unlimited
+            "canProceed": True,
+            "notifyQuota": False,
+        }
+    
+    # Video key
+    video_key = f"{channel_id}:{video_id}"
+    
+    # Get quota information from user data
+    quota_info = None
+    if user_data and b'quota' in user_data:
+        try:
+            quota_info = json.loads(user_data[b'quota'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            quota_info = None
+    
+    # If no quota information, initialize
+    if not quota_info:
+        quota_info = {
+            "first_use_time": datetime.now().isoformat(),
+            "videos": [],
+            "history": []
+        }
+    
+    # Check if current video is already in history
+    video_in_history = video_key in quota_info.get("history", [])
+    
+    # Get first use time
+    try:
+        first_use_time = datetime.fromisoformat(quota_info["first_use_time"])
+    except (ValueError, KeyError):
+        first_use_time = datetime.now()
+        quota_info["first_use_time"] = first_use_time.isoformat()
+    
+    now = datetime.now()
+    
+    # Calculate end date of 30-day period
+    end_date = first_use_time + timedelta(days=30)
+    
+    # If current time has passed end date, reset first use time and quota
+    if now > end_date:
+        # Calculate how many complete 30-day cycles have passed
+        days_passed = (now - first_use_time).days
+        cycles = days_passed // 30
+        
+        # Update first use time to start of most recent cycle
+        first_use_time = first_use_time + timedelta(days=cycles * 30)
+        quota_info["first_use_time"] = first_use_time.isoformat()
+        
+        # Update end date
+        end_date = first_use_time + timedelta(days=30)
+        
+        # Clear quota records for current cycle (keep history records)
+        quota_info["videos"] = []
+    
+    # Get user's used quota for current cycle
+    used_videos = quota_info.get("videos", [])
+    used_count = len(used_videos)
+    
+    # If video is already in history, allow continue but don't count in used quota
+    if video_in_history:
+        return {
+            "used": used_count,
+            "limit": 4,
+            "canProceed": True,
+            "notifyQuota": False,
+            "startDate": first_use_time.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d")
+        }
+    
+    # If not reached limit, can proceed
+    if used_count < 4:
+        return {
+            "used": used_count,
+            "limit": 4,
+            "canProceed": True,
+            "notifyQuota": True,
+            "startDate": first_use_time.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d")
+        }
+    else:
+        return {
+            "used": used_count,
+            "limit": 4,
+            "canProceed": False,
+            "notifyQuota": True,
+            "startDate": first_use_time.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d")
+        }
+
+def register_dictation_video(user_id, channel_id, video_id):
+    """
+    Register a video to user's dictation quota
+    
+    Args:
+        user_id (str): User ID
+        channel_id (str): Channel ID
+        video_id (str): Video ID
+        
+    Returns:
+        bool: Whether registration was successful
+    """
+    logger.info(f"Registering video for user {user_id}")
+    
+    user_key = f"{USER_PREFIX}{user_id}"
+    user_data = redis_user_client.hgetall(user_key)
+    
+    # Get user plan information
+    plan_info = None
+    if user_data and b'plan' in user_data:
+        try:
+            plan_info = json.loads(user_data[b'plan'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            plan_info = None
+    
+    # If user has any plan, no need to register, return success directly
+    if plan_info and plan_info.get("name"):
+        return True
+    
+    video_key = f"{channel_id}:{video_id}"
+    
+    # Get quota information from user data
+    quota_info = None
+    if user_data and b'quota' in user_data:
+        try:
+            quota_info = json.loads(user_data[b'quota'].decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            quota_info = None
+    
+    # If no quota information, initialize
+    if not quota_info:
+        quota_info = {
+            "first_use_time": datetime.now().isoformat(),
+            "videos": [],
+            "history": []
+        }
+    
+    # Check if video is already in history
+    if video_key in quota_info.get("history", []):
+        return True
+    
+    # Get first use time
+    try:
+        first_use_time = datetime.fromisoformat(quota_info["first_use_time"])
+    except (ValueError, KeyError):
+        first_use_time = datetime.now()
+        quota_info["first_use_time"] = first_use_time.isoformat()
+    
+    now = datetime.now()
+    
+    # Calculate end date of 30-day period
+    end_date = first_use_time + timedelta(days=30)
+    
+    # If current time has passed end date, reset first use time and quota
+    if now > end_date:
+        # Calculate how many complete 30-day cycles have passed
+        days_passed = (now - first_use_time).days
+        cycles = days_passed // 30
+        
+        # Update first use time to start of most recent cycle
+        first_use_time = first_use_time + timedelta(days=cycles * 30)
+        quota_info["first_use_time"] = first_use_time.isoformat()
+        
+        # Clear quota records for current cycle (keep history records)
+        quota_info["videos"] = []
+    
+    # Get user's used quota for current cycle
+    used_videos = quota_info.get("videos", [])
+    used_count = len(used_videos)
+    
+    # If limit reached, return failure
+    if used_count >= 4:
+        return False
+    
+    # Add video to current cycle quota list
+    if video_key not in used_videos:
+        used_videos.append(video_key)
+        quota_info["videos"] = used_videos
+    
+    # Add video to permanent history record
+    history = quota_info.get("history", [])
+    if video_key not in history:
+        history.append(video_key)
+        quota_info["history"] = history
+    
+    # Save updated quota information to user record
+    redis_user_client.hset(user_key, "quota", json.dumps(quota_info))
+    
+    return True
