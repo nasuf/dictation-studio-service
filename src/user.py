@@ -7,7 +7,7 @@ from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
 from datetime import datetime, timedelta
 from werkzeug.local import LocalProxy
 from flask import current_app
-from utils import get_plan_name_by_duration, update_user_plan
+from utils import get_plan_name_by_duration, init_quota, update_user_plan
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -82,7 +82,8 @@ def check_dictation_quota(user_id, channel_id, video_id):
         return {
             "used": 0,
             "limit": -1,  # Use -1 to represent unlimited
-            "canProceed": True
+            "canProceed": True,
+            "notifyQuota": False,
         }
     
     # Video key
@@ -145,6 +146,7 @@ def check_dictation_quota(user_id, channel_id, video_id):
             "used": used_count,
             "limit": 4,
             "canProceed": True,
+            "notifyQuota": False,
             "startDate": first_use_time.strftime("%Y-%m-%d"),
             "endDate": end_date.strftime("%Y-%m-%d")
         }
@@ -155,6 +157,7 @@ def check_dictation_quota(user_id, channel_id, video_id):
             "used": used_count,
             "limit": 4,
             "canProceed": True,
+            "notifyQuota": True,
             "startDate": first_use_time.strftime("%Y-%m-%d"),
             "endDate": end_date.strftime("%Y-%m-%d")
         }
@@ -163,6 +166,7 @@ def check_dictation_quota(user_id, channel_id, video_id):
             "used": used_count,
             "limit": 4,
             "canProceed": False,
+            "notifyQuota": True,
             "startDate": first_use_time.strftime("%Y-%m-%d"),
             "endDate": end_date.strftime("%Y-%m-%d")
         }
@@ -990,6 +994,19 @@ class UpdateUserDuration(Resource):
         except Exception as e:
             logger.error(f"Error updating user durations: {str(e)}")
             return {"error": f"An error occurred while updating user durations: {str(e)}"}, 500
+
+@user_ns.route('/init-quota')
+class InitQuota(Resource):
+    @jwt_required()
+    def post(self):
+        """Initialize user's dictation quota"""
+        try:
+            user_email = get_jwt_identity()
+            quota = init_quota(user_email)
+            return quota, 200
+        except Exception as e:
+            logger.error(f"Error initializing user's dictation quota: {str(e)}")
+            return {"error": f"An error occurred while initializing user's dictation quota: {str(e)}"}, 500
 
 @user_ns.route('/dictation_quota')
 class DictationQuota(Resource):

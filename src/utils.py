@@ -384,3 +384,16 @@ def is_plan_valid(user_info):
         return expire_date > current_time
     except (ValueError, TypeError):
         return False
+
+def init_quota(user_email):
+    user_key = f"{USER_PREFIX}{user_email}"
+    user_data = redis_user_client.hgetall(user_key)
+    if not user_data:
+        return {"error": "User not found"}, 404
+    quota = {
+        "first_use_time": datetime.now().isoformat(),
+        "videos": [],
+        "history": []
+    }
+    redis_user_client.hset(user_key, 'quota', json.dumps(quota))
+    return quota
