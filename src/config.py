@@ -23,7 +23,7 @@ JWT_REFRESH_TOKEN_EXPIRES = False
 
 USER_PLAN_DEFAULT = json.dumps({"plan": {"name": "Free"}}) 
 USER_ROLE_DEFAULT = "User"
-USER_DICTATION_CONFIG_DEFAULT = json.dumps({"playback_speed": 1, "auto_repeat": 0, "shortcuts": {"repeat": "Tab", "next": "Enter", "prev": "Shift"}})
+USER_DICTATION_CONFIG_DEFAULT = json.dumps({"playback_speed": 1, "auto_repeat": 0, "shortcuts": {"repeat": "Tab", "next": "Enter", "prev": "ControlLeft"}})
 USER_LANGUAGE_DEFAULT = "en"
 
 # Stripe Configuration
