@@ -1,3 +1,4 @@
+from datetime import datetime
 import sys
 import os
 import json
@@ -300,7 +301,8 @@ class YouTubeVideoList(Resource):
                     "video_id": video_id,
                     "title": title,
                     "visibility": visibility,
-                    "transcript": json.dumps(transcript)
+                    "transcript": json.dumps(transcript),
+                    "created_at": int(datetime.now().timestamp() * 1000)
                 }
                 redis_resource_client.hmset(video_key, video_info)
 
@@ -331,7 +333,8 @@ class YouTubeVideoList(Resource):
                     'link': video_data[b'link'].decode(),
                     'video_id': video_data[b'video_id'].decode(),
                     'title': video_data[b'title'].decode(),
-                    'transcript': json.loads(video_data[b'transcript'].decode())
+                    'transcript': json.loads(video_data[b'transcript'].decode()),
+                    'created_at': video_data[b'created_at'].decode()
                 }
 
                 if channel_id not in video_lists:
@@ -376,6 +379,10 @@ class YouTubeVideoListByChannel(Resource):
                     video_data['transcript'] = json.loads(video_data['transcript'])
                 if 'original_transcript' in video_data:
                     video_data['original_transcript'] = json.loads(video_data['original_transcript'])
+                if 'created_at' in video_data:
+                    video_data['created_at'] = int(video_data['created_at'])
+                if 'updated_at' in video_data:
+                    video_data['updated_at'] = int(video_data['updated_at'])
                 videos.append(video_data)
 
         logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
@@ -552,7 +559,7 @@ class YouTubeVideoUpdate(Resource):
             new_video_info = video_info.copy()
             new_video_info.update({k: v for k, v in data.items() if v is not None})
             new_video_info['video_id'] = new_video_id
-            
+            new_video_info['created_at'] = int(datetime.now().timestamp() * 1000)
             # Save to Redis with new key
             new_video_key = f"{VIDEO_PREFIX}{channel_id}:{new_video_id}"
             redis_data = new_video_info.copy()
@@ -571,7 +578,7 @@ class YouTubeVideoUpdate(Resource):
         else:
             # Just update the existing video fields
             video_info.update({k: v for k, v in data.items() if v is not None})
-            
+            video_info['updated_at'] = int(datetime.now().timestamp() * 1000)
             # Save to Redis
             video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
             redis_data = video_info.copy()
