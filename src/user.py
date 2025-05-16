@@ -28,6 +28,24 @@ dictation_progress_model = user_ns.model('DictationProgress', {
     'duration': fields.Integer(required=True, description='Duration in milliseconds')
 })
 
+# Add channel recommendation model
+channel_recommendation_model = user_ns.model('ChannelRecommendation', {
+    'link': fields.String(required=True, description='YouTube channel link'),
+    'language': fields.String(required=True, description='Channel language'),
+    'name': fields.String(required=False, description='Channel name')
+})
+
+# Add response model for channel recommendations
+channel_recommendation_response_model = user_ns.model('ChannelRecommendationResponse', {
+    'id': fields.String(description='Recommendation ID'),
+    'name': fields.String(description='Channel name'),
+    'link': fields.String(description='Channel link'),
+    'imageUrl': fields.String(description='Channel image URL'),
+    'submittedAt': fields.String(description='Submission timestamp'),
+    'status': fields.String(description='Recommendation status (pending, approved, rejected)'),
+    'language': fields.String(description='Channel language')
+})
+
 # Add new model definition
 video_duration_model = user_ns.model('VideoDuration', {
     'channelId': fields.String(required=True, description='Channel ID'),
@@ -843,3 +861,225 @@ class RegisterDictation(Resource):
         except Exception as e:
             logger.error(f"Error registering dictation video: {str(e)}")
             return {"error": f"An error occurred: {str(e)}"}, 500
+
+@user_ns.route('/channel-recommendations')
+class ChannelRecommendations(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def get(self):
+        """Get user's channel recommendations"""
+        try:
+            user_email = get_jwt_identity()
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get existing channel recommendations or initialize empty array
+            recommendations_json = user_data.get(b'channel_recommendations', b'[]').decode('utf-8')
+            try:
+                recommendations = json.loads(recommendations_json)
+            except json.JSONDecodeError:
+                recommendations = []
+            
+            logger.info(f"Retrieved channel recommendations for user: {user_email}")
+            return recommendations, 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving channel recommendations: {str(e)}")
+            return {"error": f"An error occurred while retrieving channel recommendations: {str(e)}"}, 500
+    
+    @jwt_required()
+    @user_ns.expect(channel_recommendation_model)
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def post(self):
+        """Submit a new channel recommendation"""
+        try:
+            user_email = get_jwt_identity()
+            recommendation_data = request.json
+
+            if 'link' not in recommendation_data:
+                return {"error": "Channel link is required"}, 400
+                
+            if 'language' not in recommendation_data:
+                return {"error": "Channel language is required"}, 400
+
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get existing channel recommendations or initialize empty array
+            recommendations_json = user_data.get(b'channel_recommendations', b'[]').decode('utf-8')
+            try:
+                recommendations = json.loads(recommendations_json)
+            except json.JSONDecodeError:
+                recommendations = []
+            
+            # Create a new recommendation
+            new_recommendation = {
+                'id': str(datetime.now().timestamp()),  # Use timestamp as ID
+                'name': recommendation_data.get('name', 'YouTube Channel'),  # Use provided name or default
+                'link': recommendation_data['link'],
+                'imageUrl': "",  # Will be populated by admin
+                'submittedAt': datetime.now().isoformat(),
+                'status': 'pending',
+                'language': recommendation_data['language']
+            }
+            
+            # Add to recommendations
+            recommendations.append(new_recommendation)
+            
+            # Save updated recommendations
+            redis_user_client.hset(user_key, 'channel_recommendations', json.dumps(recommendations))
+            
+            logger.info(f"Channel recommendation submitted by user: {user_email}")
+            return {"message": "Channel recommendation submitted successfully", "recommendation": new_recommendation}, 200
+            
+        except Exception as e:
+            logger.error(f"Error submitting channel recommendation: {str(e)}")
+            return {"error": f"An error occurred while submitting channel recommendation: {str(e)}"}, 500
+
+
+@user_ns.route('/channel-recommendations/admin')
+class AdminChannelRecommendations(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
+    def get(self):
+        """Get all channel recommendations from all users (Admin only)"""
+        try:
+            # Get admin identity
+            admin_email = get_jwt_identity()
+            
+            # Check if user is admin
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data:
+                logger.error(f"Admin user not found: {admin_email}")
+                return {"error": "Admin user not found"}, 404
+                
+            # Ensure role information is correctly decoded
+            admin_role = None
+            if b'role' in admin_data:
+                admin_role = admin_data[b'role'].decode('utf-8')
+            
+            # Use case-insensitive comparison
+            if not admin_role or admin_role.lower() != 'admin':
+                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
+                return {"error": "Only admin users can access all channel recommendations"}, 403
+            
+            # Get all user keys
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
+            all_recommendations = []
+            
+            for user_key in user_keys:
+                try:
+                    user_email = user_key.decode('utf-8').replace(USER_PREFIX, '')
+                    user_data = redis_user_client.hgetall(user_key)
+                    
+                    if b'channel_recommendations' in user_data:
+                        recommendations_json = user_data[b'channel_recommendations'].decode('utf-8')
+                        recommendations = json.loads(recommendations_json)
+                        
+                        # Add user email to each recommendation
+                        for recommendation in recommendations:
+                            recommendation['userEmail'] = user_email
+                        
+                        all_recommendations.extend(recommendations)
+                except Exception as e:
+                    logger.error(f"Error processing recommendations for user {user_key}: {str(e)}")
+                    continue
+            
+            # Sort by submission date (newest first)
+            all_recommendations.sort(key=lambda x: x.get('submittedAt', ''), reverse=True)
+            
+            logger.info(f"Admin {admin_email} retrieved all channel recommendations")
+            return all_recommendations, 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving all channel recommendations: {str(e)}")
+            return {"error": f"An error occurred while retrieving all channel recommendations: {str(e)}"}, 500
+
+
+@user_ns.route('/channel-recommendations/<string:recommendation_id>')
+class ManageChannelRecommendation(Resource):
+    @jwt_required()
+    @user_ns.expect(user_ns.model('UpdateRecommendation', {
+        'status': fields.String(required=False, description='Recommendation status (pending, approved, rejected)'),
+        'name': fields.String(required=False, description='Channel name'),
+        'imageUrl': fields.String(required=False, description='Channel image URL')
+    }))
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, recommendation_id):
+        """Update a channel recommendation (Admin only)"""
+        try:
+            # Get admin identity
+            admin_email = get_jwt_identity()
+            
+            # Check if user is admin
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data:
+                logger.error(f"Admin user not found: {admin_email}")
+                return {"error": "Admin user not found"}, 404
+                
+            # Ensure role information is correctly decoded
+            admin_role = None
+            if b'role' in admin_data:
+                admin_role = admin_data[b'role'].decode('utf-8')
+            
+            # Use case-insensitive comparison
+            if not admin_role or admin_role.lower() != 'admin':
+                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
+                return {"error": "Only admin users can update channel recommendations"}, 403
+            
+            # Get update data
+            update_data = request.json
+            
+            # Find the recommendation in all users
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
+            target_user_key = None
+            updated_recommendation = None
+            
+            for user_key in user_keys:
+                user_data = redis_user_client.hgetall(user_key)
+                
+                if b'channel_recommendations' in user_data:
+                    recommendations_json = user_data[b'channel_recommendations'].decode('utf-8')
+                    recommendations = json.loads(recommendations_json)
+                    
+                    for i, recommendation in enumerate(recommendations):
+                        if recommendation.get('id') == recommendation_id:
+                            # Found the recommendation to update
+                            target_user_key = user_key
+                            
+                            # Update the recommendation with new data
+                            if 'status' in update_data:
+                                recommendations[i]['status'] = update_data['status']
+                            if 'name' in update_data:
+                                recommendations[i]['name'] = update_data['name']
+                            if 'imageUrl' in update_data:
+                                recommendations[i]['imageUrl'] = update_data['imageUrl']
+                            
+                            # Save updated recommendations
+                            redis_user_client.hset(target_user_key, 'channel_recommendations', json.dumps(recommendations))
+                            updated_recommendation = recommendations[i]
+                            break
+                
+                if target_user_key:
+                    break
+            
+            if not target_user_key:
+                return {"error": "Recommendation not found"}, 404
+            
+            user_email = target_user_key.decode('utf-8').replace(USER_PREFIX, '')
+            logger.info(f"Admin {admin_email} updated recommendation {recommendation_id} for user {user_email}")
+            return {"message": "Recommendation updated successfully", "recommendation": updated_recommendation}, 200
+            
+        except Exception as e:
+            logger.error(f"Error updating channel recommendation: {str(e)}")
+            return {"error": f"An error occurred while updating channel recommendation: {str(e)}"}, 500
