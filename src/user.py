@@ -4,7 +4,8 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 import json
 import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
-from datetime import datetime, timedelta
+from datetime import datetime
+import time
 from werkzeug.local import LocalProxy
 from flask import current_app
 from utils import get_plan_name_by_duration, init_quota, update_user_plan, check_dictation_quota, register_dictation_video
@@ -31,8 +32,7 @@ dictation_progress_model = user_ns.model('DictationProgress', {
 # Add channel recommendation model
 channel_recommendation_model = user_ns.model('ChannelRecommendation', {
     'link': fields.String(required=True, description='YouTube channel link'),
-    'language': fields.String(required=True, description='Channel language'),
-    'name': fields.String(required=False, description='Channel name')
+    'language': fields.String(required=True, description='Channel language')
 })
 
 # Add response model for channel recommendations
@@ -920,10 +920,9 @@ class ChannelRecommendations(Resource):
             
             # Create a new recommendation
             new_recommendation = {
-                'id': str(datetime.now().timestamp()),  # Use timestamp as ID
-                'name': recommendation_data.get('name', 'YouTube Channel'),  # Use provided name or default
+                'id': f"REC_{str(int(time.time()*1000))}",
+                'name': recommendation_data['name'],
                 'link': recommendation_data['link'],
-                'imageUrl': "",  # Will be populated by admin
                 'submittedAt': datetime.now().isoformat(),
                 'status': 'pending',
                 'language': recommendation_data['language']
@@ -1008,9 +1007,14 @@ class AdminChannelRecommendations(Resource):
 class ManageChannelRecommendation(Resource):
     @jwt_required()
     @user_ns.expect(user_ns.model('UpdateRecommendation', {
-        'status': fields.String(required=False, description='Recommendation status (pending, approved, rejected)'),
+        'status': fields.String(required=True, description='Recommendation status (pending, approved, rejected)'),
         'name': fields.String(required=False, description='Channel name'),
-        'imageUrl': fields.String(required=False, description='Channel image URL')
+        'imageUrl': fields.String(required=False, description='Channel image URL'),
+        'channelId': fields.String(required=False, description='Channel ID'),
+        'visibility': fields.String(required=False, description='Channel visibility'),
+        'link': fields.String(required=False, description='Channel link'),
+        'language': fields.String(required=False, description='Channel language'),
+        'reason': fields.String(required=False, description='Rejected reason')
     }))
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
     def put(self, recommendation_id):
@@ -1060,14 +1064,40 @@ class ManageChannelRecommendation(Resource):
                             # Update the recommendation with new data
                             if 'status' in update_data:
                                 recommendations[i]['status'] = update_data['status']
-                            if 'name' in update_data:
-                                recommendations[i]['name'] = update_data['name']
-                            if 'imageUrl' in update_data:
-                                recommendations[i]['imageUrl'] = update_data['imageUrl']
                             
-                            # Save updated recommendations
-                            redis_user_client.hset(target_user_key, 'channel_recommendations', json.dumps(recommendations))
                             updated_recommendation = recommendations[i]
+
+                            # Save channel info into redis if the recommendation is approved
+                            if update_data['status'] == 'approved':
+                                channel_key = f"{CHANNEL_PREFIX}{update_data['channelId']}"
+                                if redis_resource_client.exists(channel_key):
+                                    logger.error(f"Channel {update_data['channelId']} already exists in redis")
+                                    recommendations[i]['status'] = 'rejected'
+                                    recommendations[i]['reason'] = 'Channel already exists'
+                                    redis_user_client.hset(target_user_key, 'channel_recommendations', json.dumps(recommendations))
+                                    return {"message": "Recommendation rejected successfully", "recommendation": recommendations[i]}, 200
+                                else:
+                                    recommendations[i]['status'] = 'approved'
+                                    redis_user_client.hset(target_user_key, 'channel_recommendations', json.dumps(recommendations))
+
+                                    channel_info = {
+                                        'id': update_data['channelId'],
+                                        'name': update_data['name'],
+                                        'image_url': update_data['imageUrl'],
+                                        'visibility': update_data['visibility'],
+                                        'link': update_data['link'],
+                                        'language': update_data['language']
+                                    }
+                                    redis_resource_client.hset(channel_key, mapping=channel_info)
+                                    logger.info(f"Admin {admin_email} saved channel info for channel {update_data['channelId']} according to recommendation {recommendation_id} by user {target_user_key}")
+                            else:
+                                recommendations[i]['status'] = 'rejected'
+                                if 'reason' in update_data: 
+                                    recommendations[i]['reason'] = update_data['reason']
+                                else:
+                                    recommendations[i]['reason'] = 'No reason provided'
+                                redis_user_client.hset(target_user_key, 'channel_recommendations', json.dumps(recommendations))
+                                return {"message": "Recommendation rejected successfully", "recommendation": recommendations[i]}, 200
                             break
                 
                 if target_user_key:
@@ -1076,9 +1106,7 @@ class ManageChannelRecommendation(Resource):
             if not target_user_key:
                 return {"error": "Recommendation not found"}, 404
             
-            user_email = target_user_key.decode('utf-8').replace(USER_PREFIX, '')
-            logger.info(f"Admin {admin_email} updated recommendation {recommendation_id} for user {user_email}")
-            return {"message": "Recommendation updated successfully", "recommendation": updated_recommendation}, 200
+            return {"message": "Recommendation approved successfully", "recommendation": updated_recommendation}, 200
             
         except Exception as e:
             logger.error(f"Error updating channel recommendation: {str(e)}")
