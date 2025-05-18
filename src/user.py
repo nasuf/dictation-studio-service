@@ -1218,6 +1218,9 @@ class UserFeedback(Resource):
                 if isinstance(feedback_json, bytes):
                     feedback_json = feedback_json.decode('utf-8')
                 feedback_messages = json.loads(feedback_json)
+                # Add user email to each feedback message
+                for feedback in feedback_messages:
+                    feedback['userEmail'] = user_email
             except json.JSONDecodeError:
                 feedback_messages = []
             
@@ -1293,6 +1296,22 @@ class AdminFeedback(Resource):
                         for feedback in feedback_messages:
                             feedback['userEmail'] = user_email
                         
+                        # For each feedback, if images is a list of ids, fetch from db1
+                        for fb in feedback_messages:
+                            if 'images' in fb and isinstance(fb['images'], list):
+                                image_urls = []
+                                for img_id in fb['images']:
+                                    try:
+                                        redis_resource_client.execute_command('SELECT', 1)
+                                        data_url = redis_resource_client.get(f'attachment:{img_id}')
+                                        redis_resource_client.execute_command('SELECT', 0)
+                                        if data_url:
+                                            if isinstance(data_url, bytes):
+                                                data_url = data_url.decode('utf-8')
+                                            image_urls.append(data_url)
+                                    except Exception as e:
+                                        logger.error(f"Error fetching image {img_id}: {str(e)}")
+                                fb['images'] = image_urls
                         all_feedback.extend(feedback_messages)
                 except Exception as e:
                     logger.error(f"Error processing feedback for user {user_key}: {str(e)}")
