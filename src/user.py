@@ -1250,7 +1250,7 @@ class UserFeedback(Resource):
             logger.error(f"Error retrieving feedback messages: {str(e)}")
             return {"error": f"An error occurred while retrieving feedback messages: {str(e)}"}, 500
 
-@user_ns.route('/feedback/admin')
+@user_ns.route('/feedback/admin/list')
 class AdminFeedback(Resource):
     @jwt_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
@@ -1280,7 +1280,7 @@ class AdminFeedback(Resource):
             
             # Get all user keys
             user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
-            all_feedback = []
+            feedback_user_list = []
             
             for user_key in user_keys:
                 try:
@@ -1293,37 +1293,19 @@ class AdminFeedback(Resource):
                         if isinstance(feedback_json, bytes):
                             feedback_json = feedback_json.decode('utf-8')
                         feedback_messages = json.loads(feedback_json)
-                        
-                        # Add user email to each feedback message
-                        for feedback in feedback_messages:
-                            feedback['userEmail'] = user_email
-                        
-                        # For each feedback, if images is a list of ids, fetch from db1
-                        for fb in feedback_messages:
-                            if 'images' in fb and isinstance(fb['images'], list):
-                                image_urls = []
-                                for img_id in fb['images']:
-                                    try:
-                                        redis_resource_client.execute_command('SELECT', 1)
-                                        data_url = redis_resource_client.get(f'attachment:{img_id}')
-                                        redis_resource_client.execute_command('SELECT', 0)
-                                        if data_url:
-                                            if isinstance(data_url, bytes):
-                                                data_url = data_url.decode('utf-8')
-                                            image_urls.append(data_url)
-                                    except Exception as e:
-                                        logger.error(f"Error fetching image {img_id}: {str(e)}")
-                                fb['images'] = image_urls
-                        all_feedback.extend(feedback_messages)
+                        feedback_messages.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+                        # then get the latest timestamp
+                        latest_timestamp = feedback_messages[0].get('timestamp', 0)
+                        feedback_user_list.append({
+                            'email': user_email,
+                            'timestamp': latest_timestamp
+                        })
                 except Exception as e:
                     logger.error(f"Error processing feedback for user {user_key}: {str(e)}")
                     continue
             
-            # Sort by submission date (newest first)
-            all_feedback.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
-            
             logger.info(f"Admin {admin_email} retrieved all feedback messages")
-            return all_feedback, 200
+            return feedback_user_list, 200
             
         except Exception as e:
             logger.error(f"Error retrieving all feedback messages: {str(e)}")
