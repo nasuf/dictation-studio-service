@@ -1133,7 +1133,6 @@ class UserFeedback(Resource):
             # Get form data
             message = request.form.get('message')
             email = request.form.get('email', user_email)
-            sender = request.form.get('sender')
             
             if not message:
                 return {"error": "Feedback message is required"}, 400
@@ -1143,6 +1142,11 @@ class UserFeedback(Resource):
 
             if not user_data:
                 return {"error": "User not found"}, 404
+            
+            # Get user name
+            user_name = None
+            if b'username' in user_data:
+                user_name = user_data[b'username'].decode('utf-8')
 
             # Get existing feedback messages or initialize empty array
             feedback_json = user_data.get(b'feedback_messages', b'[]')
@@ -1178,11 +1182,11 @@ class UserFeedback(Resource):
             # Create a new feedback message, store only image ids
             new_feedback = {
                 'id': f"FB_{timestamp}",
-                'sender': sender,
+                'sender': user_name,
+                'senderType': "user",
                 'message': message,
                 'email': email,
                 'timestamp': timestamp,
-                'status': 'pending',
                 'images': image_ids
             }
             
@@ -1327,84 +1331,93 @@ class AdminFeedback(Resource):
             logger.error(f"Error retrieving all feedback messages: {str(e)}")
             return {"error": f"An error occurred while retrieving all feedback messages: {str(e)}"}, 500
 
-@user_ns.route('/feedback/<string:feedback_id>')
-class ManageFeedback(Resource):
+@user_ns.route('/feedback/admin')
+class AdminSendFeedback(Resource):
     @jwt_required()
-    @user_ns.expect(user_ns.model('UpdateFeedback', {
-        'status': fields.String(required=True, description='Feedback status (pending, in_progress, resolved)'),
-        'response': fields.String(required=False, description='Admin response to the feedback')
-    }))
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
-    def put(self, feedback_id):
-        """Update a feedback message status (Admin only)"""
+    def post(self):
+        """Admin sends a feedback message to a user (as a new message in feedback_messages)"""
         try:
-            # Get admin identity
             admin_email = get_jwt_identity()
-            
-            # Check if user is admin
             admin_key = f"{USER_PREFIX}{admin_email}"
             admin_data = redis_user_client.hgetall(admin_key)
-            
             if not admin_data:
                 logger.error(f"Admin user not found: {admin_email}")
                 return {"error": "Admin user not found"}, 404
-                
-            # Ensure role information is correctly decoded
             admin_role = None
             if b'role' in admin_data:
                 admin_role = admin_data[b'role'].decode('utf-8')
-            
-            # Use case-insensitive comparison
+            admin_name = None
+            if b'username' in admin_data:
+                admin_name = admin_data[b'username'].decode('utf-8')
             if not admin_role or admin_role.lower() != 'admin':
                 logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
-                return {"error": "Only admin users can update feedback messages"}, 403
-            
-            # Get update data
-            update_data = request.json
-            
-            # Find the feedback message in all users
-            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
-            target_user_key = None
-            updated_feedback = None
-            
-            for user_key in user_keys:
-                user_data = redis_user_client.hgetall(user_key)
-                
-                if b'feedback_messages' in user_data:
-                    feedback_json = user_data[b'feedback_messages']
-                    # Handle both string and bytes types
-                    if isinstance(feedback_json, bytes):
-                        feedback_json = feedback_json.decode('utf-8')
-                    feedback_messages = json.loads(feedback_json)
-                    
-                    for i, feedback in enumerate(feedback_messages):
-                        if feedback.get('id') == feedback_id:
-                            # Found the feedback message to update
-                            target_user_key = user_key
-                            
-                            # Update the feedback message with new data
-                            if 'status' in update_data:
-                                feedback_messages[i]['status'] = update_data['status']
-                            
-                            if 'response' in update_data:
-                                feedback_messages[i]['response'] = update_data['response']
-                                feedback_messages[i]['respondedAt'] = int(time.time() * 1000)
-                                feedback_messages[i]['respondedBy'] = admin_email
-                            
-                            updated_feedback = feedback_messages[i]
-                            
-                            # Save updated feedback messages
-                            redis_user_client.hset(target_user_key, 'feedback_messages', json.dumps(feedback_messages))
-                            break
-                
-                if target_user_key:
-                    break
-            
-            if not target_user_key:
-                return {"error": "Feedback message not found"}, 404
-            
-            return {"message": "Feedback message updated successfully", "feedback": updated_feedback}, 200
-            
+                return {"error": "Only admin users can send feedback messages"}, 403
+
+            # Accept both JSON and multipart/form-data
+            if request.content_type and request.content_type.startswith('multipart/form-data'):
+                message = request.form.get('response')
+                user_email = request.form.get('email')
+            else:
+                data = request.json or {}
+                message = data.get('response')
+                user_email = data.get('email')
+            if not message or not message.strip():
+                return {"error": "Feedback message is required"}, 400
+
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+            if not user_data:
+                return {"error": "User not found"}, 404
+
+            # Get existing feedback messages or initialize empty array
+            feedback_json = user_data.get(b'feedback_messages', b'[]')
+            if isinstance(feedback_json, bytes):
+                feedback_json = feedback_json.decode('utf-8')
+            try:
+                feedback_messages = json.loads(feedback_json)
+            except json.JSONDecodeError:
+                feedback_messages = []
+
+            # Process uploaded images if present
+            image_ids = []
+            if 'images' in request.files:
+                files = request.files.getlist('images')
+                for file in files:
+                    if file and file.filename:
+                        file_content = file.read()
+                        base64_content = base64.b64encode(file_content).decode('utf-8')
+                        mime_type = file.content_type or 'application/octet-stream'
+                        data_url = f"data:{mime_type};base64,{base64_content}"
+                        img_id = str(uuid.uuid4())
+                        redis_resource_client.execute_command('SELECT', 1)
+                        redis_resource_client.set(f'attachment:{img_id}', data_url)
+                        redis_resource_client.execute_command('SELECT', 0)
+                        image_ids.append(img_id)
+
+            # Use epoch UTC milliseconds for timestamp
+            timestamp = int(time.time() * 1000)
+
+            # Create a new feedback message, sender is admin
+            new_feedback = {
+                'id': f"FB_{timestamp}",
+                'sender': admin_name,
+                'senderType': "admin",
+                'message': message,
+                'email': user_email,
+                'timestamp': timestamp,
+                'images': image_ids
+            }
+
+            # Add to feedback messages
+            feedback_messages.append(new_feedback)
+
+            # Save updated feedback messages
+            redis_user_client.hset(user_key, 'feedback_messages', json.dumps(feedback_messages))
+
+            logger.info(f"Admin {admin_email} sent feedback message to user: {user_email}")
+            return {"message": "Feedback message sent successfully", "feedback": new_feedback}, 200
+
         except Exception as e:
-            logger.error(f"Error updating feedback message: {str(e)}")
-            return {"error": f"An error occurred while updating feedback message: {str(e)}"}, 500
+            logger.error(f"Error sending admin feedback message: {str(e)}")
+            return {"error": f"An error occurred while sending feedback message: {str(e)}"}, 500
