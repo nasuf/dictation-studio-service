@@ -1132,7 +1132,6 @@ class UserFeedback(Resource):
             
             # Get form data
             message = request.form.get('message')
-            email = request.form.get('email', user_email)
             
             if not message:
                 return {"error": "Feedback message is required"}, 400
@@ -1185,7 +1184,7 @@ class UserFeedback(Resource):
                 'sender': user_name,
                 'senderType': "user",
                 'message': message,
-                'email': email,
+                'email': user_email,
                 'timestamp': timestamp,
                 'images': image_ids
             }
@@ -1224,9 +1223,6 @@ class UserFeedback(Resource):
                 if isinstance(feedback_json, bytes):
                     feedback_json = feedback_json.decode('utf-8')
                 feedback_messages = json.loads(feedback_json)
-                # Add user email to each feedback message
-                for feedback in feedback_messages:
-                    feedback['userEmail'] = user_email
             except json.JSONDecodeError:
                 feedback_messages = []
             
