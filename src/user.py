@@ -1208,7 +1208,9 @@ class UserFeedback(Resource):
     def get(self):
         """Get user's feedback messages"""
         try:
-            user_email = get_jwt_identity()
+            user_email = request.args.get('userEmail')
+            if not user_email:
+                user_email = get_jwt_identity()
             user_key = f"{USER_PREFIX}{user_email}"
             user_data = redis_user_client.hgetall(user_key)
 
