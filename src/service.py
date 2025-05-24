@@ -1,8 +1,10 @@
-from datetime import datetime
+import time
 import sys
 import os
 import json
 import logging
+import threading
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
@@ -155,25 +157,54 @@ class YouTubeChannel(Resource):
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 500: 'Server Error'})
     def get(self):
         """Get all YouTube channel information from Redis"""
+        MAX_RETRIES = 3  # Maximum retry attempts
+        RETRY_DELAY = 0.2  # Delay between retries in seconds
+        
         try:
             visibility = request.args.get('visibility', VISIBILITY_ALL)
             language = request.args.get('language', LANGUAGE_ALL)
             all_channels = []
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                keys = list(redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"))
+                logger.info(f"scan_iter found {len(keys)} keys on attempt {attempt}")
+                if keys:
+                    break
+                if attempt < MAX_RETRIES:
+                    logger.warning(f"No channel keys found, retrying in {RETRY_DELAY} seconds...")
+                    time.sleep(RETRY_DELAY)
+
+            if not keys:
+                logger.error("No channel keys found after retries, returning empty list.")
+                return [], 200
+            
+            if not keys and attempt == MAX_RETRIES:
+                logger.warning("Forcing Redis connection pool reset and retrying...")
+                redis_resource_client.connection_pool.disconnect()
+        
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
+                logger.info(f"channel key: {key}")
                 channel_info = redis_resource_client.hgetall(key)
                 channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
+                logger.info(f"channel visibility: {channel_data.get('visibility')}")
                 # if visibility is not public, skip
                 if visibility != VISIBILITY_ALL and channel_data.get('visibility') != visibility:
                     continue
                 if language != LANGUAGE_ALL and channel_data.get('language') != language:
                     continue
                 all_channels.append(channel_data)
+                logger.info(f"appended channel: {channel_data['name']}")
+                logger.info(f"all channels length: {len(all_channels)}")
+                logger.info(f"all_channels id: {id(all_channels)}, thread: {threading.get_ident()}, length: {len(all_channels)}")
+                logger.info(f"Redis client info: {redis_resource_client}")
             
             logger.info(f"Retrieved {len(all_channels)} channels from Redis")
             return all_channels, 200
         except Exception as e:
             logger.error(f"Error retrieving channel information: {str(e)}")
             return {"error": f"Error retrieving channel information: {str(e)}"}, 500
+        finally:
+            logger.info("finally block executed")
 
 @ns.route('/channel/<string:channel_id>')
 class YouTubeChannelOperations(Resource):
