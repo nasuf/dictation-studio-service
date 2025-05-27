@@ -240,9 +240,9 @@ class VerifyPayment(Resource):
             # Parse JSON strings into objects for specific fields
             user_info = {}
             for k, v in user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
+                if k != 'password':
+                    key = k
+                    value = v
                     # Try to parse JSON strings for specific fields
                     try:
                         # Attempt to parse each field as JSON
@@ -288,7 +288,7 @@ class CancelSubscription(Resource):
 
             # Get current plan data
             try:
-                plan_data = json.loads(user_data.get(b'plan', b'{}').decode('utf-8'))
+                plan_data = json.loads(user_data.get('plan', '{}'))
             except json.JSONDecodeError:
                 plan_data = {}
 
@@ -560,7 +560,7 @@ class VerificationCodes(Resource):
             user_key = f"{USER_PREFIX}{user_email}"
             user_data = redis_user_client.hgetall(user_key)
             
-            if not user_data or user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+            if not user_data or user_data.get('role', '') != 'Admin':
                 logger.warning(f"Non-admin user {user_email} attempted to access verification codes")
                 return {"error": "Only administrators can access verification codes"}, 403
             
@@ -570,7 +570,7 @@ class VerificationCodes(Resource):
                 code_data = redis_user_client.get(key)
                 if code_data:
                     code_info = json.loads(code_data)
-                    random_part = key.decode('utf-8').split(':')[1]
+                    random_part = key.split(':')[1]
                     
                     # 计算过期时间
                     created_time = datetime.fromtimestamp(code_info.get('timestamp', 0))
@@ -632,7 +632,7 @@ class AssignVerificationCode(Resource):
             admin_key = f"{USER_PREFIX}{admin_email}"
             admin_data = redis_user_client.hgetall(admin_key)
             
-            if not admin_data or admin_data.get(b'role', b'').decode('utf-8') != 'Admin':
+            if not admin_data or admin_data.get('role', '') != 'Admin':
                 logger.warning(f"Non-admin user {admin_email} attempted to assign verification code")
                 return {"error": "Only administrators can assign verification codes"}, 403
             
@@ -679,9 +679,9 @@ class AssignVerificationCode(Resource):
             # 获取用户当前计划
             user_data = redis_user_client.hgetall(user_key)
             current_plan = None
-            if b'plan' in user_data:
+            if 'plan' in user_data:
                 try:
-                    current_plan = json.loads(user_data[b'plan'].decode('utf-8'))
+                    current_plan = json.loads(user_data['plan'])
                 except json.JSONDecodeError:
                     current_plan = None
 
@@ -756,8 +756,8 @@ def check_expired_plans():
         for key in redis_user_client.scan_iter(match=f"{USER_PREFIX}*"):
             user_data = redis_user_client.hgetall(key)
             
-            if b'plan' in user_data:
-                plan_data = json.loads(user_data[b'plan'].decode('utf-8'))
+            if 'plan' in user_data:
+                plan_data = json.loads(user_data['plan'])
                 
                 # 检查是否有过期时间
                 if 'expireTime' in plan_data:
@@ -794,7 +794,7 @@ def check_expired_plans():
                             redis_user_client.hset(key, 'plan', json.dumps(plan_data))
                             
                             # 记录日志
-                            user_email = key.decode('utf-8').replace(USER_PREFIX, '')
+                            user_email = key.replace(USER_PREFIX, '')
                             logger.info(f"Plan expired for user {user_email}, reset to Free plan")
                     except Exception as e:
                         logger.error(f"Error processing plan expiration for {key}: {str(e)}")

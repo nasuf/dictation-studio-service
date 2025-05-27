@@ -16,6 +16,7 @@ from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
 from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
+from redis_manager import RedisManager
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -43,9 +44,10 @@ api.add_namespace(auth_ns, path='/dictation-studio/auth')
 api.add_namespace(user_ns, path='/dictation-studio/user')
 api.add_namespace(payment_ns, path='/dictation-studio/payment')
 
+redis_manager = RedisManager()
 # Redis connection
-redis_resource_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_RESOURCE_DB, password=REDIS_PASSWORD)
-redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
+redis_resource_client = redis_manager.get_resource_client()
+redis_user_client = redis_manager.get_user_client()
 
 app.config['redis_resource_client'] = redis_resource_client
 app.config['redis_user_client'] = redis_user_client
@@ -161,7 +163,7 @@ class YouTubeChannel(Resource):
             all_channels = []
             for key in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
                 channel_info = redis_resource_client.hgetall(key)
-                channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
+                channel_data = {k: v for k, v in channel_info.items()}
                 # if visibility is not public, skip
                 if visibility != VISIBILITY_ALL and channel_data.get('visibility') != visibility:
                     continue
@@ -201,7 +203,7 @@ class YouTubeChannelOperations(Resource):
             
             # Get current channel info
             channel_info = redis_resource_client.hgetall(channel_key)
-            decoded_info = {k.decode(): v.decode() for k, v in channel_info.items()}
+            decoded_info = {k: v for k, v in channel_info.items()}
             
             # Update only the fields that are provided in the request
             decoded_info.update({k: v for k, v in data.items() if v is not None})
@@ -226,7 +228,7 @@ class YouTubeChannelOperations(Resource):
                 return {"error": "Channel not found"}, 404
             
             channel_info = redis_resource_client.hgetall(channel_key)
-            channel_data = {k.decode(): v.decode() for k, v in channel_info.items()}
+            channel_data = {k: v for k, v in channel_info.items()}
             
             logger.info(f"Retrieved channel information for: {channel_id}")
             return channel_data, 200
@@ -322,7 +324,7 @@ class YouTubeVideoList(Resource):
             video_lists = {}
             pattern = f"{VIDEO_PREFIX}*"
             for key in redis_resource_client.scan_iter(pattern):
-                key_str = key.decode('utf-8')
+                key_str = key
                 channel_id = key_str.split(':')[1]  # video:channel_id:video_id
                 video_data = redis_resource_client.hgetall(key)
                 
@@ -330,11 +332,11 @@ class YouTubeVideoList(Resource):
                     continue
 
                 video_info = {
-                    'link': video_data[b'link'].decode(),
-                    'video_id': video_data[b'video_id'].decode(),
-                    'title': video_data[b'title'].decode(),
-                    'transcript': json.loads(video_data[b'transcript'].decode()),
-                    'created_at': video_data[b'created_at'].decode()
+                    'link': video_data['link'],
+                    'video_id': video_data['video_id'],
+                    'title': video_data['title'],
+                    'transcript': json.loads(video_data['transcript']),
+                    'created_at': video_data['created_at']
                 }
 
                 if channel_id not in video_lists:
@@ -369,10 +371,8 @@ class YouTubeVideoListByChannel(Resource):
             video_data = redis_resource_client.hgetall(video_key)
             
             if video_data:
-                if visibility != VISIBILITY_ALL and video_data[b'visibility'].decode() != visibility:
+                if visibility != VISIBILITY_ALL and video_data['visibility'] != visibility:
                     continue
-                # Convert bytes to string
-                video_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in video_data.items()}
                 
                 # Parse JSON fields
                 if 'transcript' in video_data:
@@ -406,8 +406,8 @@ class VideoTranscript(Resource):
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
-                "title": video_data[b'title'].decode(),
-                "transcript": json.loads(video_data[b'transcript'].decode())
+                "title": video_data['title'],
+                "transcript": json.loads(video_data['transcript'])
             }, 200
 
         except Exception as e:
@@ -437,7 +437,7 @@ class VideoTranscriptUpdate(Resource):
                 logger.warning(f"Video {video_id} not found in channel {channel_id}")
                 return {"error": "Video not found"}, 404
 
-            transcript = json.loads(video_data[b'transcript'].decode())
+            transcript = json.loads(video_data['transcript'])
             if 0 <= index < len(transcript):
                 transcript[index] = transcript_item
                 redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
@@ -475,8 +475,8 @@ class FullVideoTranscriptUpdate(Resource):
 
             # copy original transcript to original_transcript
             # if original_transcript field is not existing, get current transcript from redis then copy to original_transcript
-            if b'original_transcript' not in video_data:
-                original_transcript = json.loads(video_data[b'transcript'].decode())
+            if 'original_transcript' not in video_data:
+                original_transcript = json.loads(video_data['transcript'])
                 redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
 
             redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
@@ -503,13 +503,13 @@ class YouTubeVideoDelete(Resource):
 
             for user_key in redis_user_client.scan_iter("user:*"):
                 user_data = redis_user_client.hgetall(user_key)
-                if b'dictation_progress' in user_data:
-                    dictation_progress = json.loads(user_data[b'dictation_progress'].decode('utf-8'))
+                if 'dictation_progress' in user_data:
+                    dictation_progress = json.loads(user_data['dictation_progress'])
                     video_key = f"{channel_id}:{video_id}"
                     if video_key in dictation_progress:
                         del dictation_progress[video_key]
                         redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
-                        logger.info(f"Removed dictation progress for video {video_id} from user {user_key.decode('utf-8')}")
+                        logger.info(f"Removed dictation progress for video {video_id} from user {user_key}")
 
             logger.info(f"Successfully deleted video {video_id} from channel {channel_id}")
             return {"message": f"Video {video_id} deleted successfully from channel {channel_id}"}, 200
@@ -607,9 +607,9 @@ class RestoreVideoTranscript(Resource):
 
             restored = False
             # Firstly, try to restore from original_transcript
-            if b'original_transcript' in video_data:
+            if 'original_transcript' in video_data:
                 try:
-                    original_transcript = json.loads(video_data[b'original_transcript'].decode())
+                    original_transcript = json.loads(video_data['original_transcript'])
                     # update transcript
                     redis_resource_client.hset(video_key, 'transcript', json.dumps(original_transcript))
                     # delete original_transcript field
@@ -643,8 +643,8 @@ class RestoreVideoTranscript(Resource):
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
-                "title": video_data[b'title'].decode(),
-                "transcript": json.loads(redis_resource_client.hget(video_key, 'transcript').decode())
+                "title": video_data['title'],
+                "transcript": json.loads(redis_resource_client.hget(video_key, 'transcript'))
             }, 200
 
         except Exception as e:

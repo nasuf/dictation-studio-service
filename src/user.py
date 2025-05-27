@@ -107,7 +107,7 @@ class DictationProgress(Resource):
                 return {"error": "User not found"}, 404
 
             # Update dictation progress
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            dictation_progress = json.loads(user_data.get('dictation_progress', '{}'))
             video_key = f"{progress_data['channelId']}:{progress_data['videoId']}"
             dictation_progress[video_key] = {
                 'userInput': progress_data['userInput'],
@@ -117,7 +117,7 @@ class DictationProgress(Resource):
             redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
 
             # Update structured duration data
-            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}, "date": {}}').decode('utf-8'))
+            duration_data = json.loads(user_data.get('duration_data', '{"duration": 0, "channels": {}, "date": {}}'))
 
             channel_id = progress_data['channelId']
             video_id = progress_data['videoId']
@@ -180,7 +180,7 @@ class DictationProgress(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            dictation_progress = json.loads(user_data.get('dictation_progress', '{}'))
             video_key = f"{channel_id}:{video_id}"
             progress = dictation_progress.get(video_key)
 
@@ -233,11 +233,11 @@ class ChannelDictationProgress(Resource):
             pattern = f"{VIDEO_PREFIX}{channel_id}:*"
             video_keys = redis_resource_client.scan_iter(pattern)
             
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            dictation_progress = json.loads(user_data.get('dictation_progress', '{}'))
             
             channel_progress = {}
             for video_key in video_keys:
-                video_id = video_key.decode().split(':')[-1]
+                video_id = video_key.split(':')[-1]
                 progress_key = f"{channel_id}:{video_id}"
                 progress = dictation_progress.get(progress_key, {})
                 channel_progress[video_id] = progress.get('overallCompletion', 0)
@@ -267,7 +267,7 @@ class ChannelDictationProgress(Resource):
                 return {"error": "User not found"}, 404
 
             # Get existing dictation progress
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            dictation_progress = json.loads(user_data.get('dictation_progress', '{}'))
 
             # Filter progress for the specific channel
             channel_progress = []
@@ -301,8 +301,8 @@ class AllUsers(Resource):
                 user_data = redis_user_client.hgetall(key)
                 user_info = {}
                 for k, v in user_data.items():
-                    key_str = k.decode('utf-8')
-                    value_str = v.decode('utf-8')
+                    key_str = k
+                    value_str = v
                     try:
                         # Attempt to parse each field as JSON
                         user_info[key_str] = json.loads(value_str)
@@ -332,7 +332,7 @@ class AllDictationProgress(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            dictation_progress = json.loads(user_data.get(b'dictation_progress', b'{}').decode('utf-8'))
+            dictation_progress = json.loads(user_data.get('dictation_progress', '{}'))
 
             all_progress = []
             for key, value in dictation_progress.items():
@@ -342,7 +342,7 @@ class AllDictationProgress(Resource):
                 channel_info = redis_resource_client.hgetall(channel_key)
                 if not channel_info:
                     continue
-                channel_name = channel_info[b'name'].decode('utf-8')
+                channel_name = channel_info['name']
 
                 video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
                 video_info = redis_resource_client.hgetall(video_key)
@@ -353,8 +353,8 @@ class AllDictationProgress(Resource):
                     'channelId': channel_id,
                     'channelName': channel_name,
                     'videoId': video_id,
-                    'videoTitle': video_info[b'title'].decode('utf-8'),
-                    'videoLink': video_info[b'link'].decode('utf-8'),
+                    'videoTitle': video_info['title'],
+                    'videoLink': video_info['link'],
                     'overallCompletion': value['overallCompletion']
                 })
 
@@ -380,7 +380,7 @@ class UserDuration(Resource):
             if not user_data:
                 return {"error": "User not found"}, 404
 
-            duration_data = json.loads(user_data.get(b'duration_data', b'{"duration": 0, "channels": {}, "date": {}}').decode('utf-8'))
+            duration_data = json.loads(user_data.get('duration_data', '{"duration": 0, "channels": {}, "date": {}}'))
 
             total_duration = duration_data.get('duration', 0)
             daily_durations = duration_data.get('date', {})
@@ -424,7 +424,7 @@ class UserConfig(Resource):
             # Update user data with new values
             for key, value in config_data.items():
                 if isinstance(value, (dict, list)):
-                    existing_value = user_data.get(key.encode(), b'{}').decode('utf-8')
+                    existing_value = user_data.get(key, '{}')
                     try:
                         existing_dict = json.loads(existing_value)
                     except json.JSONDecodeError:
@@ -440,9 +440,9 @@ class UserConfig(Resource):
             updated_user_data = redis_user_client.hgetall(user_key)
             updated_config = {}
             for k, v in updated_user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
+                if k != 'password':
+                    key = k
+                    value = v
                     try:
                         updated_config[key] = json.loads(value)
                     except json.JSONDecodeError:
@@ -473,9 +473,9 @@ class UserConfig(Resource):
             # Convert all values to JSON, except for the password
             config = {}
             for k, v in user_data.items():
-                if k != b'password':
-                    key = k.decode('utf-8')
-                    value = v.decode('utf-8')
+                if k != 'password':
+                    key = k
+                    value = v
                     try:
                         config[key] = json.loads(value)
                     except json.JSONDecodeError:
@@ -532,7 +532,7 @@ class MissedWords(Resource):
                     return "other"
 
             # Get existing missed words structure or initialize empty object
-            missed_words_json = user_data.get(b'missed_words', b'[]').decode('utf-8')
+            missed_words_json = user_data.get('missed_words', '[]')
             try:
                 # Try to parse as structured object first
                 missed_words_struct = json.loads(missed_words_json)
@@ -590,7 +590,7 @@ class MissedWords(Resource):
                 return {"error": "User not found"}, 404
 
             # Get missed words data
-            missed_words_json = user_data.get(b'missed_words', b'[]').decode('utf-8')
+            missed_words_json = user_data.get('missed_words', '[]')
             
             try:
                 # Try to parse as structured object first
@@ -678,7 +678,7 @@ class MissedWords(Resource):
             words_to_delete = set(words_data['words'])
             
             # Get current missed words structure
-            missed_words_json = user_data.get(b'missed_words', b'[]').decode('utf-8')
+            missed_words_json = user_data.get('missed_words', '[]')
             
             try:
                 missed_words_struct = json.loads(missed_words_json)
@@ -751,8 +751,8 @@ class UpdateUserDuration(Resource):
                 
             # Ensure role information is correctly decoded
             admin_role = None
-            if b'role' in admin_data:
-                admin_role = admin_data[b'role'].decode('utf-8')
+            if 'role' in admin_data:
+                admin_role = admin_data['role']
             
             logger.info(f"User {admin_email} with role {admin_role} attempting to update durations")
             
@@ -886,7 +886,7 @@ class ChannelRecommendations(Resource):
                 return {"error": "User not found"}, 404
 
             # Get existing channel recommendations or initialize empty array
-            recommendations_json = user_data.get(b'channel_recommendations', b'[]').decode('utf-8')
+            recommendations_json = user_data.get('channel_recommendations', '[]')
             try:
                 recommendations = json.loads(recommendations_json)
             except json.JSONDecodeError:
@@ -921,7 +921,7 @@ class ChannelRecommendations(Resource):
                 return {"error": "User not found"}, 404
 
             # Get existing channel recommendations or initialize empty array
-            recommendations_json = user_data.get(b'channel_recommendations', b'[]').decode('utf-8')
+            recommendations_json = user_data.get('channel_recommendations', '[]')
             try:
                 recommendations = json.loads(recommendations_json)
             except json.JSONDecodeError:
@@ -971,8 +971,8 @@ class AdminChannelRecommendations(Resource):
                 
             # Ensure role information is correctly decoded
             admin_role = None
-            if b'role' in admin_data:
-                admin_role = admin_data[b'role'].decode('utf-8')
+            if 'role' in admin_data:
+                admin_role = admin_data['role']
             
             # Use case-insensitive comparison
             if not admin_role or admin_role.lower() != 'admin':
@@ -985,11 +985,11 @@ class AdminChannelRecommendations(Resource):
             
             for user_key in user_keys:
                 try:
-                    user_email = user_key.decode('utf-8').replace(USER_PREFIX, '')
+                    user_email = user_key.replace(USER_PREFIX, '')
                     user_data = redis_user_client.hgetall(user_key)
                     
-                    if b'channel_recommendations' in user_data:
-                        recommendations_json = user_data[b'channel_recommendations'].decode('utf-8')
+                    if 'channel_recommendations' in user_data:
+                        recommendations_json = user_data['channel_recommendations']
                         recommendations = json.loads(recommendations_json)
                         
                         # Add user email to each recommendation
@@ -1042,8 +1042,8 @@ class ManageChannelRecommendation(Resource):
                 
             # Ensure role information is correctly decoded
             admin_role = None
-            if b'role' in admin_data:
-                admin_role = admin_data[b'role'].decode('utf-8')
+            if 'role' in admin_data:
+                admin_role = admin_data['role']
             
             # Use case-insensitive comparison
             if not admin_role or admin_role.lower() != 'admin':
@@ -1061,8 +1061,8 @@ class ManageChannelRecommendation(Resource):
             for user_key in user_keys:
                 user_data = redis_user_client.hgetall(user_key)
                 
-                if b'channel_recommendations' in user_data:
-                    recommendations_json = user_data[b'channel_recommendations'].decode('utf-8')
+                if 'channel_recommendations' in user_data:
+                    recommendations_json = user_data['channel_recommendations']
                     recommendations = json.loads(recommendations_json)
                     
                     for i, recommendation in enumerate(recommendations):
@@ -1144,15 +1144,12 @@ class UserFeedback(Resource):
             
             # Get user name
             user_name = None
-            if b'username' in user_data:
-                user_name = user_data[b'username'].decode('utf-8')
+            if 'username' in user_data:
+                user_name = user_data['username']
 
             # Get existing feedback messages or initialize empty array
-            feedback_json = user_data.get(b'feedback_messages', b'[]')
+            feedback_json = user_data.get('feedback_messages', '[]')
             try:
-                # Handle both string and bytes types
-                if isinstance(feedback_json, bytes):
-                    feedback_json = feedback_json.decode('utf-8')
                 feedback_messages = json.loads(feedback_json)
             except json.JSONDecodeError:
                 feedback_messages = []
@@ -1164,7 +1161,7 @@ class UserFeedback(Resource):
                 for file in files:
                     if file and file.filename:
                         file_content = file.read()
-                        base64_content = base64.b64encode(file_content).decode('utf-8')
+                        base64_content = base64.b64encode(file_content)
                         mime_type = file.content_type or 'application/octet-stream'
                         data_url = f"data:{mime_type};base64,{base64_content}"
                         # Generate a unique id for the image
@@ -1217,11 +1214,9 @@ class UserFeedback(Resource):
                 return {"error": "User not found"}, 404
 
             # Get existing feedback messages or initialize empty array
-            feedback_json = user_data.get(b'feedback_messages', b'[]')
+            feedback_json = user_data.get('feedback_messages', '[]')
             try:
                 # Handle both string and bytes types
-                if isinstance(feedback_json, bytes):
-                    feedback_json = feedback_json.decode('utf-8')
                 feedback_messages = json.loads(feedback_json)
             except json.JSONDecodeError:
                 feedback_messages = []
@@ -1236,8 +1231,6 @@ class UserFeedback(Resource):
                             data_url = redis_resource_client.get(f'attachment:{img_id}')
                             redis_resource_client.execute_command('SELECT', 0)
                             if data_url:
-                                if isinstance(data_url, bytes):
-                                    data_url = data_url.decode('utf-8')
                                 image_urls.append(data_url)
                         except Exception as e:
                             logger.error(f"Error fetching image {img_id}: {str(e)}")
@@ -1270,8 +1263,8 @@ class AdminFeedback(Resource):
                 
             # Ensure role information is correctly decoded
             admin_role = None
-            if b'role' in admin_data:
-                admin_role = admin_data[b'role'].decode('utf-8')
+            if 'role' in admin_data:
+                admin_role = admin_data['role']
             
             # Use case-insensitive comparison
             if not admin_role or admin_role.lower() != 'admin':
@@ -1284,14 +1277,11 @@ class AdminFeedback(Resource):
             
             for user_key in user_keys:
                 try:
-                    user_email = user_key.decode('utf-8').replace(USER_PREFIX, '')
+                    user_email = user_key.replace(USER_PREFIX, '')
                     user_data = redis_user_client.hgetall(user_key)
                     
-                    if b'feedback_messages' in user_data:
-                        feedback_json = user_data[b'feedback_messages']
-                        # Handle both string and bytes types
-                        if isinstance(feedback_json, bytes):
-                            feedback_json = feedback_json.decode('utf-8')
+                    if 'feedback_messages' in user_data:
+                        feedback_json = user_data['feedback_messages']
                         feedback_messages = json.loads(feedback_json)
                         feedback_messages.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                         # then get the latest timestamp
@@ -1325,11 +1315,11 @@ class AdminSendFeedback(Resource):
                 logger.error(f"Admin user not found: {admin_email}")
                 return {"error": "Admin user not found"}, 404
             admin_role = None
-            if b'role' in admin_data:
-                admin_role = admin_data[b'role'].decode('utf-8')
+            if 'role' in admin_data:
+                admin_role = admin_data['role']
             admin_name = None
-            if b'username' in admin_data:
-                admin_name = admin_data[b'username'].decode('utf-8')
+            if 'username' in admin_data:
+                admin_name = admin_data['username']
             if not admin_role or admin_role.lower() != 'admin':
                 logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
                 return {"error": "Only admin users can send feedback messages"}, 403
@@ -1351,9 +1341,7 @@ class AdminSendFeedback(Resource):
                 return {"error": "User not found"}, 404
 
             # Get existing feedback messages or initialize empty array
-            feedback_json = user_data.get(b'feedback_messages', b'[]')
-            if isinstance(feedback_json, bytes):
-                feedback_json = feedback_json.decode('utf-8')
+            feedback_json = user_data.get('feedback_messages', '[]')
             try:
                 feedback_messages = json.loads(feedback_json)
             except json.JSONDecodeError:
@@ -1366,7 +1354,7 @@ class AdminSendFeedback(Resource):
                 for file in files:
                     if file and file.filename:
                         file_content = file.read()
-                        base64_content = base64.b64encode(file_content).decode('utf-8')
+                        base64_content = base64.b64encode(file_content)
                         mime_type = file.content_type or 'application/octet-stream'
                         data_url = f"data:{mime_type};base64,{base64_content}"
                         img_id = str(uuid.uuid4())

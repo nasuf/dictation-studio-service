@@ -234,7 +234,7 @@ class Login(Resource):
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated
-                existing_data = {k.decode('utf-8'): v.decode('utf-8') 
+                existing_data = {k: v 
                                for k, v in existing_user.items()}
                 # Preserve existing fields that are not being updated
                 for key in existing_data:
@@ -350,7 +350,7 @@ class UserPlan(Resource):
             current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
             
             # only allow admin to change user plan
-            if current_user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+            if current_user_data.get('role', '') != 'Admin':
                 logger.warning(f"Non-admin user {current_user_email} attempted to change user plan")
                 return {"error": "Only 'Admin' role can change user plans"}, 403
 
@@ -430,7 +430,7 @@ class UserRole(Resource):
             current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
             
             # only allow admin to change user role
-            if current_user_data.get(b'role', b'').decode('utf-8') != 'Admin':
+            if current_user_data.get('role', '') != 'Admin':
                 logger.warning(f"Non-admin user {current_user_email} attempted to change user role")
                 return {"error": "Only 'Admin' role can change user roles"}, 403
 
@@ -484,9 +484,9 @@ class UserRole(Resource):
 def parse_user_data(user_data):
     user_info = {}
     for k, v in user_data.items():
-        if k != b'password':
-            key = k.decode('utf-8')
-            value = v.decode('utf-8')
+        if k != 'password':
+            key = k
+            value = v
             # Try to parse JSON strings for specific fields
             try:
                 # Attempt to parse each field as JSON
