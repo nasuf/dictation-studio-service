@@ -281,9 +281,9 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
     # 获取用户当前计划
     user_data = redis_user_client.hgetall(user_key)
     current_plan = None
-    if b'plan' in user_data:
+    if 'plan' in user_data:
         try:
-            current_plan = json.loads(user_data[b'plan'].decode('utf-8'))
+            current_plan = json.loads(user_data['plan'])
         except json.JSONDecodeError:
             current_plan = None
 
@@ -337,9 +337,9 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
 
     # 记录计划更新历史
     update_history = []
-    if b'plan_update_history' in user_data:
+    if 'plan_update_history' in user_data:
         try:
-            update_history = json.loads(user_data[b'plan_update_history'].decode('utf-8'))
+            update_history = json.loads(user_data['plan_update_history'])
         except json.JSONDecodeError:
             update_history = []
 
@@ -416,9 +416,9 @@ def check_dictation_quota(user_id, channel_id, video_id):
     
     # Get user plan information
     plan_info = None
-    if user_data and b'plan' in user_data:
+    if user_data and 'plan' in user_data:
         try:
-            plan_info = json.loads(user_data[b'plan'].decode('utf-8'))
+            plan_info = json.loads(user_data['plan'])
         except (json.JSONDecodeError, UnicodeDecodeError):
             plan_info = None
     
@@ -436,9 +436,9 @@ def check_dictation_quota(user_id, channel_id, video_id):
     
     # Get quota information from user data
     quota_info = None
-    if user_data and b'quota' in user_data:
+    if user_data and 'quota' in user_data:
         try:
-            quota_info = json.loads(user_data[b'quota'].decode('utf-8'))
+            quota_info = json.loads(user_data['quota'])
         except (json.JSONDecodeError, UnicodeDecodeError):
             quota_info = None
     else:
@@ -542,9 +542,9 @@ def register_dictation_video(user_id, channel_id, video_id):
     
     # Get user plan information
     plan_info = None
-    if user_data and b'plan' in user_data:
+    if user_data and 'plan' in user_data:
         try:
-            plan_info = json.loads(user_data[b'plan'].decode('utf-8'))
+            plan_info = json.loads(user_data['plan'])
         except (json.JSONDecodeError, UnicodeDecodeError):
             plan_info = None
     
@@ -556,9 +556,9 @@ def register_dictation_video(user_id, channel_id, video_id):
     
     # Get quota information from user data
     quota_info = None
-    if user_data and b'quota' in user_data:
+    if user_data and 'quota' in user_data:
         try:
-            quota_info = json.loads(user_data[b'quota'].decode('utf-8'))
+            quota_info = json.loads(user_data['quota'])
         except (json.JSONDecodeError, UnicodeDecodeError):
             quota_info = None
     
