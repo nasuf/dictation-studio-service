@@ -6,8 +6,7 @@ from config import JWT_ACCESS_TOKEN_EXPIRES, JWT_REFRESH_TOKEN_EXPIRES, USER_DIC
 from utils import add_token_to_blacklist, hash_password
 import json
 from datetime import datetime, timedelta
-from flask import current_app
-from werkzeug.local import LocalProxy
+from redis_manager import RedisManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -64,7 +63,8 @@ user_info_model = auth_ns.model('UserInfo', {
     'username': fields.String(required=True, description='Username')
 })
 
-redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
+redis_manager = RedisManager()
+redis_user_client = redis_manager.get_user_client()
 
 @auth_ns.route('/userinfo')
 class UserInfo(Resource):

@@ -6,8 +6,7 @@ import logging
 from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
-import redis
-from config import CHANNEL_PREFIX, LANGUAGE_ALL, REDIS_HOST, REDIS_PORT, REDIS_RESOURCE_DB, REDIS_USER_DB, VIDEO_PREFIX, REDIS_PASSWORD, VISIBILITY_ALL
+from config import CHANNEL_PREFIX, LANGUAGE_ALL, VIDEO_PREFIX, VISIBILITY_ALL
 from flask_jwt_extended import JWTManager, jwt_required
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from werkzeug.utils import secure_filename
@@ -48,9 +47,6 @@ redis_manager = RedisManager()
 # Redis connection
 redis_resource_client = redis_manager.get_resource_client()
 redis_user_client = redis_manager.get_user_client()
-
-app.config['redis_resource_client'] = redis_resource_client
-app.config['redis_user_client'] = redis_user_client
 
 # Input models for Swagger
 youtube_url_model = api.model('YouTubeURL', {

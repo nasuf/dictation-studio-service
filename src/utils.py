@@ -1,20 +1,22 @@
 from functools import wraps
 import logging
 import time
-import redis
 import re
 import os
 import json
 import requests
 import hashlib
-from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, REDIS_HOST, REDIS_PORT, REDIS_BLACKLIST_DB, REDIS_PASSWORD, REDIS_USER_DB, USER_PREFIX
+from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, USER_PREFIX
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp as youtube_dl
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+from redis_manager import RedisManager
 
-redis_blacklist_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_BLACKLIST_DB, password=REDIS_PASSWORD)
-redis_user_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_USER_DB, password=REDIS_PASSWORD)
+redis_manager = RedisManager()
+redis_blacklist_client = redis_manager.get_blacklist_client()
+redis_user_client = redis_manager.get_user_client()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

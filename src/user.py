@@ -6,20 +6,20 @@ import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
 from datetime import datetime
 import time
-from werkzeug.local import LocalProxy
-from flask import current_app
 from utils import get_plan_name_by_duration, init_quota, update_user_plan, check_dictation_quota, register_dictation_video
 import base64
 import uuid
+from redis_manager import RedisManager
+
+redis_manager = RedisManager()
+redis_resource_client = redis_manager.get_resource_client()
+redis_user_client = redis_manager.get_user_client()
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Create a namespace for user-related routes
 user_ns = Namespace('user', description='User operations')
-
-redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
-redis_resource_client = LocalProxy(lambda: current_app.config['redis_resource_client'])
 
 # Define model for dictation progress
 dictation_progress_model = user_ns.model('DictationProgress', {
@@ -1166,10 +1166,8 @@ class UserFeedback(Resource):
                         data_url = f"data:{mime_type};base64,{base64_content}"
                         # Generate a unique id for the image
                         img_id = str(uuid.uuid4())
-                        # Store in db1 with key attachment:<img_id>
-                        redis_resource_client.execute_command('SELECT', 1)
+                        # Store using dedicated attachment client (no need to switch databases)
                         redis_resource_client.set(f'attachment:{img_id}', data_url)
-                        redis_resource_client.execute_command('SELECT', 0)
                         image_ids.append(img_id)
             
             # Use epoch UTC milliseconds for timestamp
@@ -1227,9 +1225,7 @@ class UserFeedback(Resource):
                     image_urls = []
                     for img_id in fb['images']:
                         try:
-                            redis_resource_client.execute_command('SELECT', 1)
                             data_url = redis_resource_client.get(f'attachment:{img_id}')
-                            redis_resource_client.execute_command('SELECT', 0)
                             if data_url:
                                 image_urls.append(data_url)
                         except Exception as e:
@@ -1358,9 +1354,7 @@ class AdminSendFeedback(Resource):
                         mime_type = file.content_type or 'application/octet-stream'
                         data_url = f"data:{mime_type};base64,{base64_content}"
                         img_id = str(uuid.uuid4())
-                        redis_resource_client.execute_command('SELECT', 1)
                         redis_resource_client.set(f'attachment:{img_id}', data_url)
-                        redis_resource_client.execute_command('SELECT', 0)
                         image_ids.append(img_id)
 
             # Use epoch UTC milliseconds for timestamp
