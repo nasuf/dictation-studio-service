@@ -1161,7 +1161,7 @@ class UserFeedback(Resource):
                 for file in files:
                     if file and file.filename:
                         file_content = file.read()
-                        base64_content = base64.b64encode(file_content)
+                        base64_content = base64.b64encode(file_content).decode('utf-8')  # 确保解码为字符串
                         mime_type = file.content_type or 'application/octet-stream'
                         data_url = f"data:{mime_type};base64,{base64_content}"
                         # Generate a unique id for the image
@@ -1354,7 +1354,7 @@ class AdminSendFeedback(Resource):
                 for file in files:
                     if file and file.filename:
                         file_content = file.read()
-                        base64_content = base64.b64encode(file_content)
+                        base64_content = base64.b64encode(file_content).decode('utf-8')  # 确保解码为字符串
                         mime_type = file.content_type or 'application/octet-stream'
                         data_url = f"data:{mime_type};base64,{base64_content}"
                         img_id = str(uuid.uuid4())
