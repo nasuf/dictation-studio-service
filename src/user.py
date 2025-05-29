@@ -849,7 +849,7 @@ class RegisterDictation(Resource):
     }))
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Quota Exceeded', 500: 'Server Error'})
     def post(self):
-        """Register a video to user's dictation quota"""
+        """Register a video to user's dictation quota and initialize empty progress"""
         try:
             user_email = get_jwt_identity()
             data = request.json
@@ -860,10 +860,38 @@ class RegisterDictation(Resource):
             if not channel_id or not video_id:
                 return {"error": "Missing channelId or videoId"}, 400
             
+            # Check if video exists
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            if not redis_resource_client.exists(video_key):
+                return {"error": "Video not found"}, 404
+            
+            # Register the video to user's quota
             success = register_dictation_video(user_email, channel_id, video_id)
             
             if success:
-                return {"status": "success"}, 200
+                # Initialize empty dictation progress for this video
+                user_key = f"{USER_PREFIX}{user_email}"
+                user_data = redis_user_client.hgetall(user_key)
+                
+                if user_data:
+                    # Get existing dictation progress or initialize empty object
+                    dictation_progress = json.loads(user_data.get('dictation_progress', '{}'))
+                    progress_key = f"{channel_id}:{video_id}"
+                    
+                    # Initialize empty progress if not exists
+                    if progress_key not in dictation_progress:
+                        dictation_progress[progress_key] = {
+                            'userInput': {},  # Empty user input
+                            'currentTime': int(time.time() * 1000),  # Current Unix epoch milliseconds
+                            'overallCompletion': 0  # 0% completion
+                        }
+                        
+                        # Save updated dictation progress
+                        redis_user_client.hset(user_key, 'dictation_progress', json.dumps(dictation_progress))
+                        
+                        logger.info(f"Initialized empty dictation progress for user: {user_email}, channel: {channel_id}, video: {video_id}")
+                
+                return {"status": "success", "message": "Video registered and progress initialized"}, 200
             else:
                 return {"error": "Failed to register video, quota exceeded"}, 403
                 
