@@ -22,10 +22,9 @@ from datetime import datetime, timedelta
 import json
 import logging
 from functools import wraps
-from werkzeug.local import LocalProxy
-from flask import current_app
 import secrets
 import hashlib
+from redis_manager import RedisManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -76,7 +75,8 @@ DURATION_MAPPING = {
     'permanent': 365 * 100  # 使用365 * 100表示永久
 }
 
-redis_user_client = LocalProxy(lambda: current_app.config['redis_user_client'])
+redis_manager = RedisManager()
+redis_user_client = redis_manager.get_user_client()
 
 @payment_ns.route('/create-session')
 class CreateCheckoutSession(Resource):
