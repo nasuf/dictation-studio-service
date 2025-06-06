@@ -14,6 +14,7 @@ from auth import auth_ns
 from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
+from payment_zpay import payment_zpay_ns
 from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
 from redis_manager import RedisManager
 
@@ -42,6 +43,7 @@ ns = api.namespace('service', path='/dictation-studio/service', description='Dic
 api.add_namespace(auth_ns, path='/dictation-studio/auth')
 api.add_namespace(user_ns, path='/dictation-studio/user')
 api.add_namespace(payment_ns, path='/dictation-studio/payment')
+api.add_namespace(payment_zpay_ns, path='/dictation-studio/payment/zpay')
 
 redis_manager = RedisManager()
 # Redis connection
