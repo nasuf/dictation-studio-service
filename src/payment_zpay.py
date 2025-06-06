@@ -7,13 +7,14 @@ import logging
 import requests
 import secrets
 import time
-import os
 from datetime import datetime, timedelta
 from config import (
     USER_PREFIX,
     PAYMENT_MAX_RETRY_ATTEMPTS,
     PAYMENT_RETRY_DELAY_SECONDS,
-    PAYMENT_RETRY_KEY_EXPIRE_SECONDS
+    PAYMENT_RETRY_KEY_EXPIRE_SECONDS,
+    ZPAY_NOTIFY_URL,
+    ZPAY_RETURN_URL
 )
 from utils import update_user_plan, get_plan_name_by_duration
 from celery import shared_task
@@ -29,9 +30,6 @@ ZPAY_KEY = "kR4VkjRaDnP3VI3zYmPQYwgwfO0rbbKn"
 ZPAY_SUBMIT_URL = f"{ZPAY_BASE_URL}/submit.php"
 ZPAY_API_URL = f"{ZPAY_BASE_URL}/api.php"
 
-# Get ZPAY URLs from environment variables
-ZPAY_NOTIFY_URL = os.getenv('ZPAY_NOTIFY_URL', 'http://localhost:4001/dictation-studio/payment/zpay/notify')
-ZPAY_RETURN_URL = os.getenv('ZPAY_RETURN_URL', 'http://localhost:5173/profile/upgrade-plan')
 
 # Redis key prefixes
 ZPAY_ORDER_PREFIX = "zpay_order:"
