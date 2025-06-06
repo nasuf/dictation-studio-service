@@ -50,7 +50,7 @@ ZPAY_PAYMENT_TYPES = {
 
 # Plan pricing (in CNY)
 ZPAY_PLAN_PRICING = {
-    'Basic': '0.01',    # 1 month
+    'Basic': '19',    # 1 month
     'Pro': '49.00',      # 3 months  
     'Premium': '89.00'   # 6 months
 }
