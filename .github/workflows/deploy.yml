@@ -44,4 +44,6 @@ jobs:
               -e STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }} \
               -e STRIPE_SUCCESS_URL=${{ secrets.STRIPE_SUCCESS_URL }} \
               -e STRIPE_CANCEL_URL=${{ secrets.STRIPE_CANCEL_URL }} \
+              -e ZPAY_NOTIFY_URL=${{ secrets.ZPAY_NOTIFY_URL }} \
+              -e ZPAY_RETURN_URL=${{ secrets.ZPAY_RETURN_URL }} \
               dictation-studio-service
