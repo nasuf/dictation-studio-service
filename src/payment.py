@@ -752,53 +752,50 @@ def check_expired_plans():
     try:
         current_time = datetime.now()
         
-        # 获取所有用户
+        # fetch all users
         for key in redis_user_client.scan_iter(match=f"{USER_PREFIX}*"):
             user_data = redis_user_client.hgetall(key)
             
             if 'plan' in user_data:
                 plan_data = json.loads(user_data['plan'])
                 
-                # 检查是否有过期时间
-                if 'expireTime' in plan_data:
-                    try:
-                        # 解析过期时间
-                        expire_time = datetime.fromisoformat(plan_data['expireTime'])
-                        
-                        # 如果是永久会员，跳过
-                        if expire_time == datetime.max:
-                            continue
-                        
-                        # 检查是否已过期
-                        if current_time > expire_time:
-                            # 如果是周期性付款且未取消，不更改状态
-                            if plan_data.get('isRecurring') == 'true' and 'cancelAt' not in plan_data:
-                                continue
-                            
-                            # 更新为免费计划
-                            plan_data = {
-                                'name': 'Free',
-                                'expireTime': None,
-                                'isRecurring': 'false'
-                            }
-                            
-                            # 如果有订阅ID，移除它
-                            if 'stripeSubscriptionId' in plan_data:
-                                del plan_data['stripeSubscriptionId']
-                            
-                            # 如果有取消时间，移除它
-                            if 'cancelAt' in plan_data:
-                                del plan_data['cancelAt']
-                            
-                            # 保存更新后的计划数据
-                            redis_user_client.hset(key, 'plan', json.dumps(plan_data))
-                            
-                            # 记录日志
-                            user_email = key.replace(USER_PREFIX, '')
-                            logger.info(f"Plan expired for user {user_email}, reset to Free plan")
-                    except Exception as e:
-                        logger.error(f"Error processing plan expiration for {key}: {str(e)}")
-        
+                # check if there is an expire time
+                expire_time_str = plan_data.get('expireTime')
+                if not expire_time_str or not isinstance(expire_time_str, str):
+                    continue
+                expire_time = datetime.fromisoformat(expire_time_str)
+                
+                # if it is a permanent member, skip
+                if expire_time == datetime.max:
+                    continue
+                
+                # check if it is expired
+                if current_time > expire_time:
+                    # if it is a recurring payment and not cancelled, do not change the status
+                    if plan_data.get('isRecurring') == 'true' and 'cancelAt' not in plan_data:
+                        continue
+                    
+                    # update to free plan
+                    plan_data = {
+                        'name': 'Free',
+                        'expireTime': None,
+                        'isRecurring': 'false'
+                    }
+                    
+                    # if there is a subscription ID, remove it
+                    if 'stripeSubscriptionId' in plan_data:
+                        del plan_data['stripeSubscriptionId']
+                    
+                    # if there is a cancel time, remove it
+                    if 'cancelAt' in plan_data:
+                        del plan_data['cancelAt']
+                    
+                    # save the updated plan data
+                    redis_user_client.hset(key, 'plan', json.dumps(plan_data))
+                    
+                    # log the event
+                    user_email = key.replace(USER_PREFIX, '')
+                    logger.info(f"Plan expired for user {user_email}, reset to Free plan")
         return {"message": "Expired plans check completed"}
     except Exception as e:
         logger.error(f"Error checking expired plans: {str(e)}")

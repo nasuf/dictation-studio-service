@@ -17,6 +17,7 @@ from payment import payment_ns
 from payment_zpay import payment_zpay_ns
 from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
 from redis_manager import RedisManager
+import threading
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -648,7 +649,17 @@ class RestoreVideoTranscript(Resource):
         except Exception as e:
             logger.error(f"Error restoring transcript: {str(e)}")
             return {"error": f"Error restoring transcript: {str(e)}"}, 500
+        
+def schedule_check_expired_plans():
+    from payment import check_expired_plans
+    try:
+        check_expired_plans()
+    except Exception as e:
+        print(f"Error in scheduled check_expired_plans: {e}")
+    # check every 300 seconds
+    threading.Timer(300, schedule_check_expired_plans).start()
 
 # Add user namespace to API
 if __name__ == '__main__':
+    schedule_check_expired_plans()
     app.run(debug=True, host='0.0.0.0', port=4001, threaded=True)
