@@ -530,6 +530,44 @@ class ZPayUserOrders(Resource):
             logger.error(f"Error getting user orders: {str(e)}")
             return {"error": "An error occurred while getting orders"}, 500
 
+@payment_zpay_ns.route('/history')
+class ZPayPaymentHistory(Resource):
+    @jwt_required()
+    @payment_zpay_ns.doc(
+        responses={
+            200: 'Success - Returns all user payment history',
+            401: 'Unauthorized',
+            500: 'Server Error'
+        },
+        description='Get all ZPAY payment history for the current user'
+    )
+    def get(self):
+        """Get all ZPAY payment history for the current user"""
+        try:
+            user_email = get_jwt_identity()
+            user_orders_key = f"{ZPAY_USER_ORDERS_PREFIX}{user_email}"
+            order_ids = redis_user_client.lrange(user_orders_key, 0, -1)
+            orders = []
+            for order_id in order_ids:
+                order_data = get_zpay_order_data(order_id)
+                if order_data:
+                    orders.append({
+                        "orderId": order_id,
+                        "status": order_data.get('status'),
+                        "planName": order_data.get('plan_name'),
+                        "duration": order_data.get('duration'),
+                        "amount": order_data.get('amount'),
+                        "payType": order_data.get('pay_type'),
+                        "createdAt": order_data.get('created_at'),
+                        "paidAt": order_data.get('paid_at')
+                    })
+            # Sort by creation time (newest first)
+            orders.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+            return {"orders": orders, "count": len(orders)}, 200
+        except Exception as e:
+            logger.error(f"Error getting user payment history: {str(e)}")
+            return {"error": "An error occurred while getting payment history"}, 500
+
 # Background tasks
 def store_failed_zpay_update(order_id: str, order_data: dict, error: str, retry_count: int = 0):
     """Store failed ZPAY update for retry"""
