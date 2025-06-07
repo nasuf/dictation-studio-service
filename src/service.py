@@ -254,6 +254,7 @@ class YouTubeVideoList(Resource):
                 return {"error": "Invalid input. Data and transcript files must match."}, 400
 
             results = []
+            duplicate_video_ids = []
             for video_data, transcript_file in zip(data, transcript_files):
                 channel_id = video_data.get('channel_id')
                 video_link = video_data.get('video_link')
@@ -277,10 +278,17 @@ class YouTubeVideoList(Resource):
                     results.append({"error": f"Invalid YouTube URL: {video_link}"})
                     continue
 
+                video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+                # If video_key already exists, skip and collect duplicate
+                if redis_resource_client.exists(video_key):
+                    logger.info(f"Duplicate video: {video_id} in channel {channel_id}, skipping update.")
+                    duplicate_video_ids.append(video_id)
+                    results.append({"duplicate": video_id})
+                    continue
+
                 # Save the uploaded transcript file
                 filename = secure_filename(f"{video_id}.srt")
                 file_path = os.path.join(uploads_dir, filename)
-                
                 try:
                     transcript_file.save(file_path)
                     logger.info(f"File saved successfully: {file_path}")
@@ -296,7 +304,6 @@ class YouTubeVideoList(Resource):
                     results.append({"error": f"Unable to parse SRT file for video: {video_link}"})
                     continue
 
-                video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
                 video_info = {
                     "link": video_link,
                     "video_id": video_id,
@@ -310,6 +317,12 @@ class YouTubeVideoList(Resource):
                 logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
 
+            if duplicate_video_ids:
+                return {
+                    "message": "partially success",
+                    "results": results,
+                    "duplicate_video_ids": duplicate_video_ids
+                }, 200
             return {"results": results}, 200
         except Exception as e:
             logger.error(f"Error saving video list: {str(e)}")
