@@ -168,6 +168,11 @@ class YouTubeChannel(Resource):
                     continue
                 if language != LANGUAGE_ALL and channel_data.get('language') != language:
                     continue
+                if 'videos' in channel_data:
+                    try:
+                        channel_data['videos'] = json.loads(channel_data['videos'])
+                    except Exception:
+                        channel_data['videos'] = []
                 all_channels.append(channel_data)
             
             logger.info(f"Retrieved {len(all_channels)} channels from Redis")
@@ -313,6 +318,16 @@ class YouTubeVideoList(Resource):
                     "created_at": int(datetime.now().timestamp() * 1000)
                 }
                 redis_resource_client.hmset(video_key, video_info)
+
+                # Add video_id to channel's 'videos' field (JSON array in hash)
+                videos_json = redis_resource_client.hget(channel_key, 'videos')
+                try:
+                    videos_list = json.loads(videos_json) if videos_json else []
+                except Exception:
+                    videos_list = []
+                if video_id not in videos_list:
+                    videos_list.append(video_id)
+                    redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
 
                 logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
                 results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
@@ -512,6 +527,17 @@ class YouTubeVideoDelete(Resource):
                 return {"error": "Video not found"}, 404
 
             redis_resource_client.delete(video_key)
+
+            # Remove video_id from channel's 'videos' field (JSON array in hash)
+            channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+            videos_json = redis_resource_client.hget(channel_key, 'videos')
+            try:
+                videos_list = json.loads(videos_json) if videos_json else []
+            except Exception:
+                videos_list = []
+            if video_id in videos_list:
+                videos_list.remove(video_id)
+                redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
 
             for user_key in redis_user_client.scan_iter("user:*"):
                 user_data = redis_user_client.hgetall(user_key)
