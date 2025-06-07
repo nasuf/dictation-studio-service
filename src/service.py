@@ -560,15 +560,12 @@ class YouTubeVideoDelete(Resource):
 class YouTubeVideoUpdate(Resource):
     @jwt_required()
     @ns.expect(api.model('VideoUpdate', {
-        'link': fields.String(required=False, description='Updated YouTube video URL'),
         'title': fields.String(required=False, description='Updated video title'),
         'visibility': fields.String(required=False, description='Updated video visibility'),
-        'video_id': fields.String(required=False, description='New video ID')
     }))
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
-        """Update a specific video's attributes in a channel"""
-        # Get current video info from cache or Redis
+        """Update a specific video's attributes in a channel (only title and visibility, keep all other fields unchanged)"""
         old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
         video_info = redis_resource_client.hgetall(old_video_key)
         if not video_info:
@@ -580,54 +577,18 @@ class YouTubeVideoUpdate(Resource):
             logger.warning("No update data provided")
             return {"error": "No update data provided"}, 400
 
-        # Check if there's a new video ID (either directly specified or derived from new link)
-        new_video_id = None
-        if 'link' in data:
-            extracted_video_id = get_video_id(data['link'])
-            if not extracted_video_id:
-                logger.warning(f"Invalid YouTube URL: {data['link']}")
-                return {"error": f"Invalid YouTube URL: {data['link']}"}, 400
-            new_video_id = extracted_video_id
-        elif 'video_id' in data:
-            new_video_id = data['video_id']
+        # Only update title and visibility if provided
+        if 'title' in data and data['title'] is not None:
+            video_info['title'] = data['title']
+        if 'visibility' in data and data['visibility'] is not None:
+            video_info['visibility'] = data['visibility']
+        video_info['updated_at'] = int(datetime.now().timestamp() * 1000)
 
-        # If we're changing the video ID
-        if new_video_id and new_video_id != video_id:
-            # Create new video entry with updated info
-            new_video_info = video_info.copy()
-            new_video_info.update({k: v for k, v in data.items() if v is not None})
-            new_video_info['video_id'] = new_video_id
-            new_video_info['created_at'] = int(datetime.now().timestamp() * 1000)
-            # Save to Redis with new key
-            new_video_key = f"{VIDEO_PREFIX}{channel_id}:{new_video_id}"
-            redis_data = new_video_info.copy()
-            if 'transcript' in redis_data:
-                redis_data['transcript'] = json.dumps(redis_data['transcript'])
-            if 'original_transcript' in redis_data:
-                redis_data['original_transcript'] = json.dumps(redis_data['original_transcript'])
-            redis_resource_client.hmset(new_video_key, redis_data)
-            
-            # Delete old video from Redis and cache
-            old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            redis_resource_client.delete(old_video_key)
-
-            logger.info(f"Successfully moved video from {video_id} to {new_video_id} in channel {channel_id}")
-            return {"message": f"Video moved from {video_id} to {new_video_id} successfully"}, 200
-        else:
-            # Just update the existing video fields
-            video_info.update({k: v for k, v in data.items() if v is not None})
-            video_info['updated_at'] = int(datetime.now().timestamp() * 1000)
-            # Save to Redis
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            redis_data = video_info.copy()
-            if 'transcript' in redis_data:
-                redis_data['transcript'] = json.dumps(redis_data['transcript'])
-            if 'original_transcript' in redis_data:
-                redis_data['original_transcript'] = json.dumps(redis_data['original_transcript'])
-            redis_resource_client.hmset(video_key, redis_data)
-            
-            logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
-            return {"message": f"Video {video_id} updated successfully"}, 200
+        # Save to Redis, do not touch any other fields (e.g., transcript, original_transcript)
+        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+        redis_resource_client.hmset(video_key, video_info)
+        logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
+        return {"message": f"Video {video_id} updated successfully"}, 200
 
 @ns.route('/<string:channel_id>/<string:video_id>/restore-transcript')
 class RestoreVideoTranscript(Resource):
