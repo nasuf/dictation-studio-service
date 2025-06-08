@@ -506,6 +506,8 @@ class FullVideoTranscriptUpdate(Resource):
                 original_transcript = json.loads(video_data['transcript'])
                 redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
 
+            # update updated_at
+            redis_resource_client.hset(video_key, 'updated_at', int(datetime.now().timestamp() * 1000))
             redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
             logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
             return {"message": "Full transcript updated successfully"}, 200
