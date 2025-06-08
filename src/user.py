@@ -336,6 +336,9 @@ class AllDictationProgress(Resource):
 
             all_progress = []
             for key, value in dictation_progress.items():
+                # value['userInput'] could be {}, if so then skip it
+                if not value['userInput']:
+                    continue
                 channel_id, video_id = key.split(':')
                 
                 channel_key = f"{CHANNEL_PREFIX}{channel_id}"
