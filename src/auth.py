@@ -83,7 +83,8 @@ class UserInfo(Resource):
             redis_user_client.hmset(user_key, {
                 'email': data['email'],
                 'avatar': data['avatar'],
-                'username': data['username']
+                'username': data['username'],
+                'updated_at': int(datetime.now().timestamp() * 1000)
             })
             user_data = redis_user_client.hgetall(user_key)
             # Parse JSON strings into objects for specific fields
@@ -98,7 +99,9 @@ class UserInfo(Resource):
                 'plan': USER_PLAN_DEFAULT,
                 'role': USER_ROLE_DEFAULT,
                 'dictation_config': USER_DICTATION_CONFIG_DEFAULT,
-                'language': USER_LANGUAGE_DEFAULT
+                'language': USER_LANGUAGE_DEFAULT,
+                'updated_at': int(datetime.now().timestamp() * 1000),
+                'created_at': int(datetime.now().timestamp() * 1000)
             }
             redis_user_client.hmset(user_key, user_info)
 
@@ -167,7 +170,8 @@ class Register(Resource):
                 "plan": USER_PLAN_DEFAULT,
                 "role": USER_ROLE_DEFAULT,
                 "dictation_config": USER_DICTATION_CONFIG_DEFAULT,
-                "language": USER_LANGUAGE_DEFAULT
+                "language": USER_LANGUAGE_DEFAULT,
+                "created_at": int(datetime.now().timestamp() * 1000)
             }
             redis_user_client.hmset(f"user:{email}", {k: v.encode('utf-8') if isinstance(v, str) else v for k, v in user_data.items()})
 
@@ -222,7 +226,7 @@ class Login(Resource):
             user_data = {
                 "email": email,
                 "username": username,
-                "avatar": avatar
+                "avatar": avatar,
             }
 
             if not existing_user:
@@ -231,6 +235,7 @@ class Login(Resource):
                 user_data["role"] = USER_ROLE_DEFAULT
                 user_data["dictation_config"] = USER_DICTATION_CONFIG_DEFAULT
                 user_data["language"] = USER_LANGUAGE_DEFAULT
+                user_data["created_at"] = int(datetime.now().timestamp() * 1000)
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated
@@ -240,6 +245,7 @@ class Login(Resource):
                 for key in existing_data:
                     if key not in user_data and key != 'password':
                         user_data[key] = existing_data[key]
+                user_data["updated_at"] = int(datetime.now().timestamp() * 1000)
                 logger.info(f"Updating existing user: {email}")
 
             # Update Redis with user data
@@ -392,6 +398,8 @@ class UserPlan(Resource):
                 try:
                     # Store the plan object as JSON string
                     redis_user_client.hset(user_key, 'plan', plan_json)
+                    # Update updated_at
+                    redis_user_client.hset(user_key, 'updated_at', int(datetime.now().timestamp() * 1000))
                     logger.info(f"Updated plan for user {email} to {plan_data}")
                     results.append({
                         "email": email,
@@ -455,6 +463,8 @@ class UserRole(Resource):
 
                 try:
                     redis_user_client.hset(user_key, 'role', new_role)
+                    # Update updated_at
+                    redis_user_client.hset(user_key, 'updated_at', int(datetime.now().timestamp() * 1000))
                     logger.info(f"Updated role for user {email} to {new_role}")
                     results.append({
                         "email": email,
