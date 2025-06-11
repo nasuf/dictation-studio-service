@@ -18,6 +18,7 @@ from payment_zpay import payment_zpay_ns
 from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
 from redis_manager import RedisManager
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -84,6 +85,103 @@ full_transcript_update_model = api.model('FullTranscriptUpdate', {
         'transcript': fields.String(required=True, description='Transcript text')
     })))
 })
+
+# New model for batch transcript updates
+batch_transcript_update_model = api.model('BatchTranscriptUpdate', {
+    'videos': fields.List(fields.Nested(api.model('VideoTranscriptUpdate', {
+        'video_id': fields.String(required=True, description='Video ID'),
+        'transcript': fields.List(fields.Nested(api.model('TranscriptItem', {
+            'start': fields.Float(required=True, description='Start time of the transcript item'),
+            'end': fields.Float(required=True, description='End time of the transcript item'),
+            'transcript': fields.String(required=True, description='Transcript text')
+        })))
+    })))
+})
+
+# Common function to restore transcript for a single video
+def restore_video_transcript(channel_id, video_id):
+    """
+    Common function to restore transcript for a single video
+    Returns (success, message, status_code)
+    """
+    try:
+        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+        video_data = redis_resource_client.hgetall(video_key)
+        
+        if not video_data:
+            return False, f"Video {video_id} not found in channel {channel_id}", 404
+
+        restored = False
+        # Firstly, try to restore from original_transcript
+        if 'original_transcript' in video_data:
+            try:
+                original_transcript = json.loads(video_data['original_transcript'])
+                # update transcript
+                redis_resource_client.hset(video_key, 'transcript', json.dumps(original_transcript))
+                # delete original_transcript field
+                redis_resource_client.hdel(video_key, 'original_transcript')
+                restored = True
+                logger.info(f"Successfully restored transcript from original_transcript for video {video_id}")
+            except Exception as e:
+                logger.error(f"Failed to restore from original_transcript: {str(e)}")
+                # try to restore from SRT file
+
+        # if failed to restore from original_transcript, try to restore from SRT file
+        if not restored:
+            uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
+            filename = secure_filename(f"{video_id}.srt")
+            file_path = os.path.join(uploads_dir, filename)
+
+            if not os.path.exists(file_path):
+                return False, f"SRT file not found and no original transcript available for video {video_id}", 404
+
+            transcript = parse_srt_file(file_path)
+            if transcript is None:
+                return False, f"Unable to parse SRT file for video: {video_id}", 500
+
+            redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
+            # delete original_transcript field
+            redis_resource_client.hdel(video_key, 'original_transcript')
+            logger.info(f"Successfully restored transcript from SRT file for video {video_id}")
+
+        return True, f"Transcript restored successfully for video {video_id}", 200
+
+    except Exception as e:
+        logger.error(f"Error restoring transcript for video {video_id}: {str(e)}")
+        return False, f"Error restoring transcript for video {video_id}: {str(e)}", 500
+
+# Common function to update transcript for a single video
+def update_video_transcript(channel_id, video_id, new_transcript):
+    """
+    Common function to update transcript for a single video
+    Returns (success, message, status_code)
+    """
+    try:
+        if not new_transcript:
+            return False, "Transcript data is required", 400
+
+        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+        video_data = redis_resource_client.hgetall(video_key)
+        
+        if not video_data:
+            return False, f"Video {video_id} not found in channel {channel_id}", 404
+
+        # copy original transcript to original_transcript
+        # if original_transcript field is not existing, get current transcript from redis then copy to original_transcript
+        if 'original_transcript' not in video_data:
+            original_transcript = json.loads(video_data['transcript'])
+            redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
+
+        # update updated_at
+        redis_resource_client.hset(video_key, 'updated_at', int(datetime.now().timestamp() * 1000))
+        redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
+        
+        logger.info(f"Updated transcript for video {video_id} in channel {channel_id}")
+        return True, f"Transcript updated successfully for video {video_id}", 200
+
+    except Exception as e:
+        logger.error(f"Error updating transcript for video {video_id}: {str(e)}")
+        return False, f"Error updating transcript for video {video_id}: {str(e)}", 500
 
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
@@ -485,36 +583,102 @@ class FullVideoTranscriptUpdate(Resource):
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
         """Update the entire transcript for a video, meanwhile copy original transcript to original_transcript"""
+        data = request.json
+        new_transcript = data.get('transcript')
+        
+        success, message, status_code = update_video_transcript(channel_id, video_id, new_transcript)
+        
+        if success:
+            return {"message": message}, status_code
+        else:
+            return {"error": message}, status_code
+
+def process_single_video_transcript(channel_id, video_data):
+    """Process a single video transcript update in a thread"""
+    video_id = video_data.get('video_id')
+    transcript = video_data.get('transcript')
+    
+    if not video_id or not transcript:
+        error_msg = f"Invalid data for video {video_id}: video_id and transcript are required"
+        return {"video_id": video_id, "success": False, "message": error_msg, "status_code": 400}
+    
+    success, message, status_code = update_video_transcript(channel_id, video_id, transcript)
+    
+    return {
+        "video_id": video_id,
+        "success": success,
+        "message": message,
+        "status_code": status_code
+    }
+
+@ns.route('/<string:channel_id>/batch-transcript-update')
+class BatchTranscriptUpdate(Resource):
+    @jwt_required()
+    @ns.expect(batch_transcript_update_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id):
+        """Update transcripts for multiple videos in a channel using multithreading"""
         try:
             data = request.json
-            new_transcript = data.get('transcript')
-
-            if not new_transcript:
-                logger.warning("No transcript data provided")
-                return {"error": "Transcript data is required"}, 400
-
-            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-            video_data = redis_resource_client.hgetall(video_key)
+            videos = data.get('videos', [])
             
-            if not video_data:
-                logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found"}, 404
+            if not videos:
+                logger.warning("No video data provided")
+                return {"error": "Videos data is required"}, 400
 
-            # copy original transcript to original_transcript
-            # if original_transcript field is not existing, get current transcript from redis then copy to original_transcript
-            if 'original_transcript' not in video_data:
-                original_transcript = json.loads(video_data['transcript'])
-                redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
+            results = []
+            success_count = 0
+            error_count = 0
+            
+            # Use ThreadPoolExecutor for concurrent processing
+            max_workers = min(10, len(videos))  # Limit to 10 concurrent threads
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_video = {
+                    executor.submit(process_single_video_transcript, channel_id, video_data): video_data
+                    for video_data in videos
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_video):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        
+                        if result["success"]:
+                            success_count += 1
+                        else:
+                            error_count += 1
+                            
+                    except Exception as e:
+                        video_data = future_to_video[future]
+                        video_id = video_data.get('video_id', 'unknown')
+                        error_result = {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Thread execution error: {str(e)}",
+                            "status_code": 500
+                        }
+                        results.append(error_result)
+                        error_count += 1
+                        logger.error(f"Thread execution error for video {video_id}: {str(e)}")
 
-            # update updated_at
-            redis_resource_client.hset(video_key, 'updated_at', int(datetime.now().timestamp() * 1000))
-            redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
-            logger.info(f"Updated full transcript for video {video_id} in channel {channel_id}")
-            return {"message": "Full transcript updated successfully"}, 200
+            # Sort results by video_id for consistent ordering
+            results.sort(key=lambda x: x.get('video_id', ''))
+
+            logger.info(f"Batch transcript update completed for channel {channel_id}: {success_count} success, {error_count} errors")
+            
+            return {
+                "message": f"Batch update completed: {success_count} successful, {error_count} failed",
+                "success_count": success_count,
+                "error_count": error_count,
+                "results": results
+            }, 200
 
         except Exception as e:
-            logger.error(f"Error updating full transcript: {str(e)}")
-            return {"error": f"Error updating full transcript: {str(e)}"}, 500
+            logger.error(f"Error in batch transcript update: {str(e)}")
+            return {"error": f"Error in batch transcript update: {str(e)}"}, 500
 
 @ns.route('/video-list/<string:channel_id>/<string:video_id>')
 class YouTubeVideoDelete(Resource):
@@ -592,65 +756,120 @@ class YouTubeVideoUpdate(Resource):
         logger.info(f"Successfully updated video {video_id} in channel {channel_id}")
         return {"message": f"Video {video_id} updated successfully"}, 200
 
+def process_single_video_restore(channel_id, video_data):
+    """Process a single video transcript restore in a thread"""
+    video_id = video_data.get('video_id')
+    
+    if not video_id:
+        error_msg = f"Invalid data: video_id is required"
+        return {"video_id": video_id, "success": False, "message": error_msg, "status_code": 400}
+    
+    success, message, status_code = restore_video_transcript(channel_id, video_id)
+    
+    return {
+        "video_id": video_id,
+        "success": success,
+        "message": message,
+        "status_code": status_code
+    }
+
+# New model for batch restore
+batch_restore_model = api.model('BatchRestore', {
+    'videos': fields.List(fields.Nested(api.model('VideoRestore', {
+        'video_id': fields.String(required=True, description='Video ID')
+    })))
+})
+
+@ns.route('/<string:channel_id>/batch-restore-transcripts')
+class BatchRestoreTranscripts(Resource):
+    @jwt_required()
+    @ns.expect(batch_restore_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id):
+        """Restore transcripts for multiple videos in a channel using multithreading"""
+        try:
+            data = request.json
+            videos = data.get('videos', [])
+            
+            if not videos:
+                logger.warning("No video data provided")
+                return {"error": "Videos data is required"}, 400
+
+            results = []
+            success_count = 0
+            error_count = 0
+            
+            # Use ThreadPoolExecutor for concurrent processing
+            max_workers = min(10, len(videos))  # Limit to 10 concurrent threads
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_video = {
+                    executor.submit(process_single_video_restore, channel_id, video_data): video_data
+                    for video_data in videos
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_video):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        
+                        if result["success"]:
+                            success_count += 1
+                        else:
+                            error_count += 1
+                            
+                    except Exception as e:
+                        video_data = future_to_video[future]
+                        video_id = video_data.get('video_id', 'unknown')
+                        error_result = {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Thread execution error: {str(e)}",
+                            "status_code": 500
+                        }
+                        results.append(error_result)
+                        error_count += 1
+                        logger.error(f"Thread execution error for video {video_id}: {str(e)}")
+
+            # Sort results by video_id for consistent ordering
+            results.sort(key=lambda x: x.get('video_id', ''))
+
+            logger.info(f"Batch transcript restore completed for channel {channel_id}: {success_count} success, {error_count} errors")
+            
+            return {
+                "message": f"Batch restore completed: {success_count} successful, {error_count} failed",
+                "success_count": success_count,
+                "error_count": error_count,
+                "results": results
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error in batch transcript restore: {str(e)}")
+            return {"error": f"Error in batch transcript restore: {str(e)}"}, 500
+
 @ns.route('/<string:channel_id>/<string:video_id>/restore-transcript')
 class RestoreVideoTranscript(Resource):
     @jwt_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def post(self, channel_id, video_id):
         """Restore transcript for a specific video from original_transcript or SRT file"""
-        try:
+        success, message, status_code = restore_video_transcript(channel_id, video_id)
+        
+        if success:
+            # Get the restored transcript to return
             video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
             video_data = redis_resource_client.hgetall(video_key)
             
-            if not video_data:
-                logger.warning(f"Video {video_id} not found in channel {channel_id}")
-                return {"error": "Video not found"}, 404
-
-            restored = False
-            # Firstly, try to restore from original_transcript
-            if 'original_transcript' in video_data:
-                try:
-                    original_transcript = json.loads(video_data['original_transcript'])
-                    # update transcript
-                    redis_resource_client.hset(video_key, 'transcript', json.dumps(original_transcript))
-                    # delete original_transcript field
-                    redis_resource_client.hdel(video_key, 'original_transcript')
-                    restored = True
-                    logger.info(f"Successfully restored transcript from original_transcript for video {video_id}")
-                except Exception as e:
-                    logger.error(f"Failed to restore from original_transcript: {str(e)}")
-                    # try to restore from SRT file
-
-            # if failed to restore from original_transcript, try to restore from SRT file
-            if not restored:
-                uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
-                filename = secure_filename(f"{video_id}.srt")
-                file_path = os.path.join(uploads_dir, filename)
-
-                if not os.path.exists(file_path):
-                    logger.warning(f"SRT file not found for video {video_id}")
-                    return {"error": f"SRT file not found and no original transcript available for video {video_id}"}, 404
-
-                transcript = parse_srt_file(file_path)
-                if transcript is None:
-                    logger.error(f"Unable to parse SRT file for video: {video_id}")
-                    return {"error": f"Unable to parse SRT file for video: {video_id}"}, 500
-
-                redis_resource_client.hset(video_key, 'transcript', json.dumps(transcript))
-                # delete original_transcript field
-                redis_resource_client.hdel(video_key, 'original_transcript')
-                logger.info(f"Successfully restored transcript from SRT file for video {video_id}")
-
             return {
                 "channel_id": channel_id,
                 "video_id": video_id,
                 "title": video_data['title'],
                 "transcript": json.loads(redis_resource_client.hget(video_key, 'transcript'))
-            }, 200
-
-        except Exception as e:
-            logger.error(f"Error restoring transcript: {str(e)}")
-            return {"error": f"Error restoring transcript: {str(e)}"}, 500
+            }, status_code
+        else:
+            return {"error": message}, status_code
         
 def schedule_check_expired_plans():
     from payment import check_expired_plans
@@ -660,6 +879,65 @@ def schedule_check_expired_plans():
         print(f"Error in scheduled check_expired_plans: {e}")
     # check every 300 seconds
     threading.Timer(300, schedule_check_expired_plans).start()
+
+@ns.route('/<string:channel_id>/transcript-summary')
+class ChannelTranscriptSummary(Resource):
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def get(self, channel_id):
+        """Get transcript summary for all videos in a channel"""
+        try:
+            pattern = f"{VIDEO_PREFIX}{channel_id}:*"
+            transcript_summaries = []
+            
+            for video_key in redis_resource_client.scan_iter(pattern):
+                video_data = redis_resource_client.hgetall(video_key)
+                
+                if video_data:
+                    video_id = video_data.get('video_id')
+                    title = video_data.get('title', '')
+                    
+                    # Parse transcript to get count
+                    transcript_count = 0
+                    if 'transcript' in video_data:
+                        try:
+                            transcript = json.loads(video_data['transcript'])
+                            transcript_count = len(transcript) if transcript else 0
+                        except Exception:
+                            transcript_count = 0
+                    
+                    # Check if original transcript exists
+                    has_original = 'original_transcript' in video_data
+                    
+                    # Get last updated timestamp
+                    last_updated = None
+                    if 'updated_at' in video_data:
+                        try:
+                            last_updated = int(video_data['updated_at'])
+                        except Exception:
+                            last_updated = None
+                    
+                    transcript_summaries.append({
+                        'video_id': video_id,
+                        'title': title,
+                        'transcript_count': transcript_count,
+                        'has_original': has_original,
+                        'last_updated': last_updated
+                    })
+            
+            # Sort by video_id for consistent ordering
+            transcript_summaries.sort(key=lambda x: x.get('video_id', ''))
+            
+            logger.info(f"Retrieved transcript summary for {len(transcript_summaries)} videos in channel {channel_id}")
+            return {
+                "channel_id": channel_id,
+                "total_videos": len(transcript_summaries),
+                "summaries": transcript_summaries
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving transcript summary for channel {channel_id}: {str(e)}")
+            return {"error": f"Error retrieving transcript summary: {str(e)}"}, 500
 
 # Add user namespace to API
 if __name__ == '__main__':
