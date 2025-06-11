@@ -878,7 +878,13 @@ def schedule_check_expired_plans():
     except Exception as e:
         print(f"Error in scheduled check_expired_plans: {e}")
     # check every 300 seconds
+    logger.info("Scheduling check_expired_plans for every 300 seconds")
     threading.Timer(300, schedule_check_expired_plans).start()
+
+def start_initial_check_expired_plans():
+    """Start the first check after 10 seconds delay"""
+    logger.info("Starting initial check_expired_plans")
+    threading.Timer(10, schedule_check_expired_plans).start()
 
 @ns.route('/<string:channel_id>/transcript-summary')
 class ChannelTranscriptSummary(Resource):
@@ -941,5 +947,7 @@ class ChannelTranscriptSummary(Resource):
 
 # Add user namespace to API
 if __name__ == '__main__':
-    schedule_check_expired_plans()
+    # Only start the timer in the main process, not in the reloader process
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        start_initial_check_expired_plans()
     app.run(debug=True, host='0.0.0.0', port=4001, threaded=True)
