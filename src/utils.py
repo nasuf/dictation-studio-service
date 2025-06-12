@@ -1,18 +1,19 @@
-from functools import wraps
-import logging
-import time
-import re
 import os
 import json
-import requests
 import hashlib
-import html
-from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, USER_PREFIX
-from youtube_transcript_api import YouTubeTranscriptApi
+import logging
+import re
+import requests
 import yt_dlp
-from bs4 import BeautifulSoup
+import time
+import random
+from functools import wraps
 from datetime import datetime, timedelta
 from redis_manager import RedisManager
+from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, USER_PREFIX
+from youtube_transcript_api import YouTubeTranscriptApi
+from bs4 import BeautifulSoup
+import html
 
 redis_manager = RedisManager()
 redis_blacklist_client = redis_manager.get_blacklist_client()
@@ -92,9 +93,22 @@ def download_transcript_from_youtube_transcript_api(video_id):
         return None
 
 def load_cookies():
+    """Load YouTube cookies file if available"""
     cookie_file = os.path.join(os.path.dirname(__file__), 'youtube.com_cookies.txt')
     if os.path.exists(cookie_file):
-        return cookie_file
+        # Check if cookie file is not empty
+        try:
+            with open(cookie_file, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    logger.debug(f"Using cookie file: {cookie_file}")
+                    return cookie_file
+                else:
+                    logger.warning(f"Cookie file is empty: {cookie_file}")
+        except Exception as e:
+            logger.warning(f"Error reading cookie file {cookie_file}: {str(e)}")
+    else:
+        logger.info("No cookie file found, proceeding without cookies")
     return None
     
 def download_transcript(video_id):
@@ -626,12 +640,17 @@ def register_dictation_video(user_id, channel_id, video_id):
 
 def download_transcript_with_ytdlp(video_id, channel_language='en'):
     """
-    Download transcript using yt-dlp with the latest best practices
+    Download transcript using yt-dlp with production-optimized anti-detection measures
     
     Args:
         video_id (str): YouTube video ID
         channel_language (str): Channel language code (en, ko, zh, ja)
     """
+    # Add random delay to avoid pattern detection
+    delay = random.uniform(2, 5)
+    logger.info(f"Adding random delay of {delay:.2f} seconds to avoid detection")
+    time.sleep(delay)
+    
     logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp (language: {channel_language})")
     
     video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -649,137 +668,278 @@ def download_transcript_with_ytdlp(video_id, channel_language='en'):
     
     logger.info(f"Target languages for {channel_language}: {target_languages[:5]}... (total: {len(target_languages)})")
     
-    # Simple and effective yt-dlp configuration
-    ydl_opts = {
+    # Rotate User-Agent strings with more recent versions
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+        'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    ]
+    selected_ua = random.choice(user_agents)
+    
+    # Base configuration optimized for production environments
+    base_config = {
         'writesubtitles': True,
         'writeautomaticsubs': True,
         'subtitleslangs': target_languages,
-        'subtitlesformat': 'vtt/srt/best',
+        'subtitlesformat': 'json3/vtt/srt/best',
         'skip_download': True,
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
-        # Use cookies if available
-        'cookiefile': load_cookies(),
+        # Enhanced headers to mimic real browser behavior
+        'http_headers': {
+            'User-Agent': selected_ua,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Linux"',
+        },
+        # Network configuration with longer timeouts
+        'retries': 8,
+        'fragment_retries': 8,
+        'socket_timeout': 120,
+        'read_timeout': 120,
+        # Avoid rate limiting with longer delays
+        'sleep_interval': 3,
+        'max_sleep_interval': 15,
+        'sleep_interval_subtitles': 3,
+        # Additional anti-detection measures
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'no_color': True,
+        'prefer_insecure': False,
+        # Geo bypass attempts
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
     }
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Extract video info
-            logger.info(f"Extracting video info for {video_id}")
-            info = ydl.extract_info(video_url, download=False)
-            
-            if not info:
-                logger.error(f"Failed to extract video info for {video_id}")
-                return None
-            
-            # Get available subtitles
-            subtitles = info.get('subtitles', {})
-            automatic_captions = info.get('automatic_captions', {})
-            
-            logger.info(f"Manual subtitles available: {list(subtitles.keys())}")
-            logger.info(f"Automatic captions available: {list(automatic_captions.keys())[:10]}...")
-            
-            # Try to extract subtitle content directly from info
-            subtitle_content = None
-            subtitle_source = None
-            
-            # Try target languages in priority order
-            for lang in target_languages:
-                # Try manual subtitles first (highest priority)
-                if lang in subtitles and subtitles[lang]:
-                    for sub_format in subtitles[lang]:
-                        if 'data' in sub_format:
-                            subtitle_content = sub_format['data']
-                            subtitle_source = f'manual_{lang}'
-                            logger.info(f"Found manual subtitle data for {lang}")
-                            break
-                        elif 'url' in sub_format:
-                            # Try to download the subtitle
-                            try:
-                                subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
-                                if subtitle_content:
-                                    subtitle_source = f'manual_{lang}'
-                                    logger.info(f"Downloaded manual subtitles for {lang}")
-                                    break
-                            except Exception as e:
-                                logger.warning(f"Failed to download manual {lang} subtitle: {str(e)}")
-                                continue
-                
-                if subtitle_content:
-                    break
-                
-                # Try automatic captions for this language
-                if lang in automatic_captions and automatic_captions[lang]:
-                    for sub_format in automatic_captions[lang]:
-                        if 'data' in sub_format:
-                            subtitle_content = sub_format['data']
-                            subtitle_source = f'automatic_{lang}'
-                            logger.info(f"Found automatic caption data for {lang}")
-                            break
-                        elif 'url' in sub_format:
-                            # Try to download the subtitle
-                            try:
-                                subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
-                                if subtitle_content:
-                                    subtitle_source = f'automatic_{lang}'
-                                    logger.info(f"Downloaded automatic captions for {lang}")
-                                    break
-                            except Exception as e:
-                                logger.warning(f"Failed to download automatic {lang} caption: {str(e)}")
-                                continue
-                
-                if subtitle_content:
-                    break
-            
-            if not subtitle_content:
-                logger.warning(f"No subtitle content could be extracted for {video_id}")
-                # Fallback to youtube-transcript-api
-                logger.info(f"Trying youtube-transcript-api as fallback for {video_id}")
-                try:
-                    fallback_result = download_transcript_from_youtube_transcript_api(video_id)
-                    if fallback_result:
-                        logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
-                        return fallback_result
-                except Exception as fallback_e:
-                    logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
-                
-                return None
-            
-            # Parse the subtitle content
-            logger.info(f"Parsing subtitle content from {subtitle_source} (length: {len(subtitle_content)})")
-            parsed_data = parse_subtitle_data(subtitle_content)
-            
-            if parsed_data:
-                logger.info(f"Successfully parsed {len(parsed_data)} subtitle segments from {subtitle_source}")
-                return parsed_data
-            else:
-                logger.error(f"Failed to parse subtitle content for {video_id}")
-                # Fallback to youtube-transcript-api
-                logger.info(f"Trying youtube-transcript-api as fallback for {video_id}")
-                try:
-                    fallback_result = download_transcript_from_youtube_transcript_api(video_id)
-                    if fallback_result:
-                        logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
-                        return fallback_result
-                except Exception as fallback_e:
-                    logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
-                
-                return None
-                
-    except Exception as e:
-        logger.error(f"Error downloading transcript with yt-dlp for {video_id}: {str(e)}")
-        # Fallback to youtube-transcript-api
-        logger.info(f"Trying youtube-transcript-api as fallback for {video_id}")
+    # Add proxy support if configured
+    proxy_url = os.environ.get('YTDLP_PROXY')
+    if proxy_url:
+        base_config['proxy'] = proxy_url
+        logger.info(f"Using proxy: {proxy_url}")
+    
+    # Try multiple approaches with different configurations optimized for production
+    configs_to_try = [
+        # Config 1: Android client (most reliable for subtitles)
+        {
+            **base_config,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                    'skip': ['dash', 'hls'],
+                }
+            },
+        },
+        # Config 2: iOS client
+        {
+            **base_config,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                    'skip': ['dash', 'hls'],
+                }
+            },
+        },
+        # Config 3: Web client with enhanced options
+        {
+            **base_config,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                    'skip': ['dash', 'hls'],
+                    'player_skip': ['configs'],
+                    'innertube_host': 'www.youtube.com',
+                }
+            },
+        },
+        # Config 4: Try with cookies file if available
+        {
+            **base_config,
+            'cookiefile': load_cookies(),
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                }
+            },
+        },
+        # Config 5: Minimal config with reduced language list
+        {
+            'writesubtitles': True,
+            'writeautomaticsubs': True,
+            'subtitleslangs': target_languages[:3],  # Only first 3 languages
+            'skip_download': True,
+            'quiet': True,
+            'http_headers': {
+                'User-Agent': selected_ua,
+            },
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            },
+            'socket_timeout': 60,
+            'retries': 3,
+        },
+        # Config 6: Last resort - very minimal
+        {
+            'writesubtitles': True,
+            'writeautomaticsubs': True,
+            'subtitleslangs': ['en'],  # English only
+            'skip_download': True,
+            'quiet': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                }
+            },
+        }
+    ]
+    
+    for attempt, config in enumerate(configs_to_try, 1):
         try:
-            fallback_result = download_transcript_from_youtube_transcript_api(video_id)
-            if fallback_result:
-                logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
-                return fallback_result
-        except Exception as fallback_e:
-            logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
-        
-        return None
+            logger.info(f"Attempt {attempt}/{len(configs_to_try)}: Extracting video info for {video_id}")
+            
+            # Add random delay between attempts
+            if attempt > 1:
+                delay = random.uniform(3, 8)
+                logger.info(f"Adding delay of {delay:.2f} seconds between attempts")
+                time.sleep(delay)
+            
+            with yt_dlp.YoutubeDL(config) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+            
+                if not info:
+                    logger.warning(f"Attempt {attempt}: Failed to extract video info for {video_id}")
+                    continue
+                
+                # Get available subtitles
+                subtitles = info.get('subtitles', {})
+                automatic_captions = info.get('automatic_captions', {})
+                
+                logger.info(f"Attempt {attempt}: Manual subtitles available: {list(subtitles.keys())}")
+                logger.info(f"Attempt {attempt}: Automatic captions available: {list(automatic_captions.keys())[:10]}...")
+                
+                # Try to extract subtitle content directly from info
+                subtitle_content = None
+                subtitle_source = None
+                
+                # Try target languages in priority order
+                for lang in target_languages:
+                    # Try manual subtitles first (highest priority)
+                    if lang in subtitles and subtitles[lang]:
+                        for sub_format in subtitles[lang]:
+                            if 'data' in sub_format:
+                                subtitle_content = sub_format['data']
+                                subtitle_source = f'manual_{lang}'
+                                logger.info(f"Found manual subtitle data for {lang}")
+                                break
+                            elif 'url' in sub_format:
+                                # Try to download the subtitle
+                                try:
+                                    subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
+                                    if subtitle_content:
+                                        subtitle_source = f'manual_{lang}'
+                                        logger.info(f"Downloaded manual subtitles for {lang}")
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"Failed to download manual {lang} subtitle: {str(e)}")
+                                    continue
+                    
+                    if subtitle_content:
+                        break
+                    
+                    # Try automatic captions for this language
+                    if lang in automatic_captions and automatic_captions[lang]:
+                        for sub_format in automatic_captions[lang]:
+                            if 'data' in sub_format:
+                                subtitle_content = sub_format['data']
+                                subtitle_source = f'automatic_{lang}'
+                                logger.info(f"Found automatic caption data for {lang}")
+                                break
+                            elif 'url' in sub_format:
+                                # Try to download the subtitle
+                                try:
+                                    subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
+                                    if subtitle_content:
+                                        subtitle_source = f'automatic_{lang}'
+                                        logger.info(f"Downloaded automatic captions for {lang}")
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"Failed to download automatic {lang} caption: {str(e)}")
+                                    continue
+                    
+                    if subtitle_content:
+                        break
+                
+                if subtitle_content:
+                    # Parse the subtitle content
+                    logger.info(f"Parsing subtitle content from {subtitle_source} (length: {len(subtitle_content)})")
+                    parsed_data = parse_subtitle_data(subtitle_content)
+                    
+                    if parsed_data:
+                        logger.info(f"Successfully parsed {len(parsed_data)} subtitle segments from {subtitle_source}")
+                        return parsed_data
+                    else:
+                        logger.warning(f"Attempt {attempt}: Failed to parse subtitle content for {video_id}")
+                        continue
+                else:
+                    logger.warning(f"Attempt {attempt}: No subtitle content could be extracted for {video_id}")
+                    continue
+                    
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.warning(f"Attempt {attempt}: Error downloading transcript with yt-dlp for {video_id}: {str(e)}")
+            
+            # Check for specific error types
+            if 'sign in to confirm' in error_msg or 'not a bot' in error_msg:
+                logger.error(f"Bot detection triggered on attempt {attempt}")
+                # Add longer delay for bot detection
+                if attempt < len(configs_to_try):
+                    delay = random.uniform(10, 20)
+                    logger.info(f"Bot detection - adding longer delay of {delay:.2f} seconds")
+                    time.sleep(delay)
+            elif 'private' in error_msg or 'unavailable' in error_msg:
+                logger.error(f"Video {video_id} appears to be private or unavailable")
+                break  # No point in retrying for private videos
+            
+            if attempt == len(configs_to_try):
+                # Last attempt failed, try fallback
+                break
+            continue
+    
+    # All yt-dlp attempts failed, try fallback
+    logger.info(f"All yt-dlp attempts failed, trying youtube-transcript-api as fallback for {video_id}")
+    try:
+        fallback_result = download_transcript_from_youtube_transcript_api(video_id)
+        if fallback_result:
+            logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
+            return fallback_result
+    except Exception as fallback_e:
+        logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
+    
+    # Log detailed failure information for debugging
+    logger.error(f"All methods failed to download transcript for {video_id}")
+    logger.error("Possible solutions:")
+    logger.error("1. YouTube may have enhanced bot detection for this server IP")
+    logger.error("2. Consider using a proxy server (set YTDLP_PROXY environment variable)")
+    logger.error("3. This specific video may have restricted subtitles")
+    logger.error("4. Try again later as YouTube's bot detection may be temporary")
+    
+    return None
 
 
 def download_subtitle_url_with_ydl(ydl, url, video_id):
