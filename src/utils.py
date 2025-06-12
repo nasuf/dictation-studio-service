@@ -624,19 +624,36 @@ def register_dictation_video(user_id, channel_id, video_id):
     
     return True
 
-def download_transcript_with_ytdlp(video_id):
+def download_transcript_with_ytdlp(video_id, channel_language='en'):
     """
     Download transcript using yt-dlp with the latest best practices
+    
+    Args:
+        video_id (str): YouTube video ID
+        channel_language (str): Channel language code (en, ko, zh, ja)
     """
-    logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp")
+    logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp (language: {channel_language})")
     
     video_url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    # Get language list for the channel
+    target_languages = get_subtitle_languages_for_channel(channel_language)
+    
+    # Add English as fallback if not already included (for non-English channels)
+    if channel_language != 'en':
+        english_fallbacks = get_subtitle_languages_for_channel('en')
+        # Add English fallbacks that aren't already in target_languages
+        for lang in english_fallbacks:
+            if lang not in target_languages:
+                target_languages.append(lang)
+    
+    logger.info(f"Target languages for {channel_language}: {target_languages[:5]}... (total: {len(target_languages)})")
     
     # Simple and effective yt-dlp configuration
     ydl_opts = {
         'writesubtitles': True,
         'writeautomaticsubs': True,
-        'subtitleslangs': ['en', 'en-US', 'en-GB'],
+        'subtitleslangs': target_languages,
         'subtitlesformat': 'vtt/srt/best',
         'skip_download': True,
         'quiet': True,
@@ -667,10 +684,9 @@ def download_transcript_with_ytdlp(video_id):
             subtitle_content = None
             subtitle_source = None
             
-            # Method 1: Try to get subtitle content from the extracted info
-            # This is the most reliable method with latest yt-dlp
-            for lang in ['en', 'en-US', 'en-GB']:
-                # Try manual subtitles first
+            # Try target languages in priority order
+            for lang in target_languages:
+                # Try manual subtitles first (highest priority)
                 if lang in subtitles and subtitles[lang]:
                     for sub_format in subtitles[lang]:
                         if 'data' in sub_format:
@@ -693,7 +709,7 @@ def download_transcript_with_ytdlp(video_id):
                 if subtitle_content:
                     break
                 
-                # Try automatic captions
+                # Try automatic captions for this language
                 if lang in automatic_captions and automatic_captions[lang]:
                     for sub_format in automatic_captions[lang]:
                         if 'data' in sub_format:
@@ -715,49 +731,6 @@ def download_transcript_with_ytdlp(video_id):
                 
                 if subtitle_content:
                     break
-            
-            # Method 2: If no direct content, try other English variants
-            if not subtitle_content:
-                all_langs = list(subtitles.keys()) + list(automatic_captions.keys())
-                english_variants = [lang for lang in all_langs if lang.startswith('en')]
-                
-                for lang in english_variants:
-                    if lang in ['en', 'en-US', 'en-GB']:
-                        continue  # Already tried these
-                    
-                    # Try manual subtitles
-                    if lang in subtitles and subtitles[lang]:
-                        for sub_format in subtitles[lang]:
-                            if 'url' in sub_format:
-                                try:
-                                    subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
-                                    if subtitle_content:
-                                        subtitle_source = f'manual_{lang}'
-                                        logger.info(f"Downloaded manual subtitles for {lang}")
-                                        break
-                                except Exception as e:
-                                    logger.warning(f"Failed to download manual {lang} subtitle: {str(e)}")
-                                    continue
-                    
-                    if subtitle_content:
-                        break
-                    
-                    # Try automatic captions
-                    if lang in automatic_captions and automatic_captions[lang]:
-                        for sub_format in automatic_captions[lang]:
-                            if 'url' in sub_format:
-                                try:
-                                    subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
-                                    if subtitle_content:
-                                        subtitle_source = f'automatic_{lang}'
-                                        logger.info(f"Downloaded automatic captions for {lang}")
-                                        break
-                                except Exception as e:
-                                    logger.warning(f"Failed to download automatic {lang} caption: {str(e)}")
-                                    continue
-                    
-                    if subtitle_content:
-                        break
             
             if not subtitle_content:
                 logger.warning(f"No subtitle content could be extracted for {video_id}")
@@ -1112,3 +1085,45 @@ def get_video_info_with_ytdlp(video_id):
     except Exception as e:
         logger.error(f"Error getting video info with yt-dlp for {video_id}: {str(e)}")
         return None
+
+def get_subtitle_languages_for_channel(channel_language):
+    """
+    Map channel language to yt-dlp subtitle language codes with fallbacks
+    
+    Args:
+        channel_language (str): Channel language code (en, ko, zh, ja)
+        
+    Returns:
+        list: Ordered list of language codes to try (primary first, then fallbacks)
+    """
+    language_mapping = {
+        'en': [
+            # Primary English variants
+            'en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-NZ', 'en-IE', 'en-ZA',
+            # Auto-generated variants
+            'en-orig', 'en-auto'
+        ],
+        'ko': [
+            # Korean variants
+            'ko', 'ko-KR', 'ko-KP',
+            # Auto-generated variants  
+            'ko-orig', 'ko-auto'
+        ],
+        'zh': [
+            # Chinese variants (Simplified and Traditional)
+            'zh', 'zh-CN', 'zh-Hans', 'zh-Hans-CN', 'zh-cmn-Hans',
+            'zh-TW', 'zh-Hant', 'zh-Hant-TW', 'zh-cmn-Hant',
+            'zh-HK', 'zh-Hant-HK', 'zh-SG', 'zh-Hans-SG',
+            # Auto-generated variants
+            'zh-orig', 'zh-auto'
+        ],
+        'ja': [
+            # Japanese variants
+            'ja', 'ja-JP', 'jp',
+            # Auto-generated variants
+            'ja-orig', 'ja-auto'
+        ]
+    }
+    
+    # Return the mapped languages or default to English if not found
+    return language_mapping.get(channel_language, language_mapping['en'])

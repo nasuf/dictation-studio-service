@@ -423,8 +423,10 @@ class YouTubeVideoList(Resource):
                 # If no transcript from uploaded file, try to download using yt-dlp
                 if transcript is None:
                     try:
-                        logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp")
-                        yt_dlp_transcript = download_transcript_with_ytdlp(video_id)
+                        # Get channel language for subtitle download
+                        channel_language = redis_resource_client.hget(channel_key, 'language') or 'en'
+                        logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp (channel language: {channel_language})")
+                        yt_dlp_transcript = download_transcript_with_ytdlp(video_id, channel_language)
                         if yt_dlp_transcript:
                             # Convert yt-dlp format to our standard format
                             transcript = []
