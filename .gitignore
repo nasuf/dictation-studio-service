@@ -52,7 +52,6 @@ coverage/
 .pytest_cache/
 __pycache__/
 
-*.txt
 *.json
 venv/
 
@@ -61,3 +60,6 @@ dump.rdb
 
 setup.sh
 startup.sh
+
+*.md
+test*.py

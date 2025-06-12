@@ -6,9 +6,10 @@ import os
 import json
 import requests
 import hashlib
+import html
 from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, USER_PREFIX
 from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp as youtube_dl
+import yt_dlp
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from redis_manager import RedisManager
@@ -20,7 +21,7 @@ redis_user_client = redis_manager.get_user_client()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def add_token_to_blacklist(jti):
+def add_token_to_blacklist(jti): 
     redis_blacklist_client.set(jti, 'true', ex=JWT_ACCESS_TOKEN_EXPIRES)
 
 def with_retry(max_attempts=PAYMENT_MAX_RETRY_ATTEMPTS, delay_seconds=PAYMENT_RETRY_DELAY_SECONDS):
@@ -114,7 +115,7 @@ def download_transcript(video_id):
             'cookiefile': load_cookies(),
         }
         
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
             
             if info is None:
@@ -622,3 +623,492 @@ def register_dictation_video(user_id, channel_id, video_id):
     redis_user_client.hset(user_key, "quota", json.dumps(quota_info))
     
     return True
+
+def download_transcript_with_ytdlp(video_id):
+    """
+    Download transcript using yt-dlp with the latest best practices
+    """
+    logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp")
+    
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    # Simple and effective yt-dlp configuration
+    ydl_opts = {
+        'writesubtitles': True,
+        'writeautomaticsubs': True,
+        'subtitleslangs': ['en', 'en-US', 'en-GB'],
+        'subtitlesformat': 'vtt/srt/best',
+        'skip_download': True,
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+        # Use cookies if available
+        'cookiefile': load_cookies(),
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Extract video info
+            logger.info(f"Extracting video info for {video_id}")
+            info = ydl.extract_info(video_url, download=False)
+            
+            if not info:
+                logger.error(f"Failed to extract video info for {video_id}")
+                return None
+            
+            # Get available subtitles
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+            
+            logger.info(f"Manual subtitles available: {list(subtitles.keys())}")
+            logger.info(f"Automatic captions available: {list(automatic_captions.keys())[:10]}...")
+            
+            # Try to extract subtitle content directly from info
+            subtitle_content = None
+            subtitle_source = None
+            
+            # Method 1: Try to get subtitle content from the extracted info
+            # This is the most reliable method with latest yt-dlp
+            for lang in ['en', 'en-US', 'en-GB']:
+                # Try manual subtitles first
+                if lang in subtitles and subtitles[lang]:
+                    for sub_format in subtitles[lang]:
+                        if 'data' in sub_format:
+                            subtitle_content = sub_format['data']
+                            subtitle_source = f'manual_{lang}'
+                            logger.info(f"Found manual subtitle data for {lang}")
+                            break
+                        elif 'url' in sub_format:
+                            # Try to download the subtitle
+                            try:
+                                subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
+                                if subtitle_content:
+                                    subtitle_source = f'manual_{lang}'
+                                    logger.info(f"Downloaded manual subtitles for {lang}")
+                                    break
+                            except Exception as e:
+                                logger.warning(f"Failed to download manual {lang} subtitle: {str(e)}")
+                                continue
+                
+                if subtitle_content:
+                    break
+                
+                # Try automatic captions
+                if lang in automatic_captions and automatic_captions[lang]:
+                    for sub_format in automatic_captions[lang]:
+                        if 'data' in sub_format:
+                            subtitle_content = sub_format['data']
+                            subtitle_source = f'automatic_{lang}'
+                            logger.info(f"Found automatic caption data for {lang}")
+                            break
+                        elif 'url' in sub_format:
+                            # Try to download the subtitle
+                            try:
+                                subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
+                                if subtitle_content:
+                                    subtitle_source = f'automatic_{lang}'
+                                    logger.info(f"Downloaded automatic captions for {lang}")
+                                    break
+                            except Exception as e:
+                                logger.warning(f"Failed to download automatic {lang} caption: {str(e)}")
+                                continue
+                
+                if subtitle_content:
+                    break
+            
+            # Method 2: If no direct content, try other English variants
+            if not subtitle_content:
+                all_langs = list(subtitles.keys()) + list(automatic_captions.keys())
+                english_variants = [lang for lang in all_langs if lang.startswith('en')]
+                
+                for lang in english_variants:
+                    if lang in ['en', 'en-US', 'en-GB']:
+                        continue  # Already tried these
+                    
+                    # Try manual subtitles
+                    if lang in subtitles and subtitles[lang]:
+                        for sub_format in subtitles[lang]:
+                            if 'url' in sub_format:
+                                try:
+                                    subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
+                                    if subtitle_content:
+                                        subtitle_source = f'manual_{lang}'
+                                        logger.info(f"Downloaded manual subtitles for {lang}")
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"Failed to download manual {lang} subtitle: {str(e)}")
+                                    continue
+                    
+                    if subtitle_content:
+                        break
+                    
+                    # Try automatic captions
+                    if lang in automatic_captions and automatic_captions[lang]:
+                        for sub_format in automatic_captions[lang]:
+                            if 'url' in sub_format:
+                                try:
+                                    subtitle_content = download_subtitle_url_with_ydl(ydl, sub_format['url'], video_id)
+                                    if subtitle_content:
+                                        subtitle_source = f'automatic_{lang}'
+                                        logger.info(f"Downloaded automatic captions for {lang}")
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"Failed to download automatic {lang} caption: {str(e)}")
+                                    continue
+                    
+                    if subtitle_content:
+                        break
+            
+            if not subtitle_content:
+                logger.warning(f"No subtitle content could be extracted for {video_id}")
+                # Fallback to youtube-transcript-api
+                logger.info(f"Trying youtube-transcript-api as fallback for {video_id}")
+                try:
+                    fallback_result = download_transcript_from_youtube_transcript_api(video_id)
+                    if fallback_result:
+                        logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
+                        return fallback_result
+                except Exception as fallback_e:
+                    logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
+                
+                return None
+            
+            # Parse the subtitle content
+            logger.info(f"Parsing subtitle content from {subtitle_source} (length: {len(subtitle_content)})")
+            parsed_data = parse_subtitle_data(subtitle_content)
+            
+            if parsed_data:
+                logger.info(f"Successfully parsed {len(parsed_data)} subtitle segments from {subtitle_source}")
+                return parsed_data
+            else:
+                logger.error(f"Failed to parse subtitle content for {video_id}")
+                # Fallback to youtube-transcript-api
+                logger.info(f"Trying youtube-transcript-api as fallback for {video_id}")
+                try:
+                    fallback_result = download_transcript_from_youtube_transcript_api(video_id)
+                    if fallback_result:
+                        logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
+                        return fallback_result
+                except Exception as fallback_e:
+                    logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
+                
+                return None
+                
+    except Exception as e:
+        logger.error(f"Error downloading transcript with yt-dlp for {video_id}: {str(e)}")
+        # Fallback to youtube-transcript-api
+        logger.info(f"Trying youtube-transcript-api as fallback for {video_id}")
+        try:
+            fallback_result = download_transcript_from_youtube_transcript_api(video_id)
+            if fallback_result:
+                logger.info(f"Successfully downloaded transcript using youtube-transcript-api for {video_id}")
+                return fallback_result
+        except Exception as fallback_e:
+            logger.warning(f"youtube-transcript-api also failed for {video_id}: {str(fallback_e)}")
+        
+        return None
+
+
+def download_subtitle_url_with_ydl(ydl, url, video_id):
+    """
+    Download subtitle content using yt-dlp's internal methods
+    """
+    try:
+        # Use yt-dlp's internal URL opener which handles cookies and headers properly
+        content = ydl.urlopen(url).read()
+        
+        # Handle both bytes and string content
+        if isinstance(content, bytes):
+            content = content.decode('utf-8', errors='ignore')
+        
+        return content if content and content.strip() else None
+        
+    except Exception as e:
+        logger.warning(f"Failed to download subtitle URL {url[:100]}... for {video_id}: {str(e)}")
+        return None
+
+
+def download_subtitle_content(url):
+    """
+    Download subtitle content from URL
+    """
+    try:
+        import requests
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logger.error(f"Failed to download subtitle content from {url}: {str(e)}")
+        return None
+
+
+def parse_subtitle_data(subtitle_data):
+    """
+    Parse subtitle data from various formats (JSON3, VTT, SRT, etc.)
+    """
+    if not subtitle_data or not subtitle_data.strip():
+        logger.error("Empty subtitle data received")
+        return None
+    
+    logger.debug(f"Parsing subtitle data (first 200 chars): {subtitle_data[:200]}")
+    
+    try:
+        # Detect format and parse accordingly
+        if subtitle_data.strip().startswith('{'):
+            # JSON format (YouTube's JSON3 format)
+            logger.info("Detected JSON subtitle format")
+            return parse_json3_data(subtitle_data)
+        elif 'WEBVTT' in subtitle_data or '-->' in subtitle_data:
+            # VTT format
+            logger.info("Detected VTT subtitle format")
+            return parse_vtt_data(subtitle_data)
+        elif re.search(r'^\d+\s*$', subtitle_data.strip().split('\n')[0]):
+            # SRT format (starts with number)
+            logger.info("Detected SRT subtitle format")
+            return parse_srt_data(subtitle_data)
+        else:
+            # Try JSON parser first (most common for YouTube now), then VTT as fallback
+            logger.info("Unknown subtitle format, trying JSON parser first")
+            try:
+                return parse_json3_data(subtitle_data)
+            except:
+                logger.info("JSON parsing failed, trying VTT parser as fallback")
+                return parse_vtt_data(subtitle_data)
+            
+    except Exception as e:
+        logger.error(f"Error parsing subtitle data: {str(e)}")
+        return None
+
+
+def parse_json3_data(json_content):
+    """
+    Parse YouTube's JSON3 subtitle format
+    """
+    try:
+        import json
+        data = json.loads(json_content)
+        
+        events = data.get('events', [])
+        segments = []
+        
+        for event in events:
+            start_ms = event.get('tStartMs', 0)
+            duration_ms = event.get('dDurationMs', 0)
+            
+            # Convert milliseconds to seconds
+            start_time = start_ms / 1000.0
+            end_time = (start_ms + duration_ms) / 1000.0
+            
+            # Extract text from segments
+            text_parts = []
+            segs = event.get('segs', [])
+            for seg in segs:
+                utf8_text = seg.get('utf8', '')
+                if utf8_text:
+                    text_parts.append(utf8_text)
+            
+            if text_parts:
+                text = ''.join(text_parts)
+                # Clean up the text
+                text = html.unescape(text)
+                text = text.strip()
+                
+                if text:  # Only add non-empty segments
+                    segments.append({
+                        'start': round(start_time, 2),
+                        'end': round(end_time, 2),
+                        'text': text
+                    })
+        
+        logger.info(f"Parsed {len(segments)} JSON3 segments")
+        return segments
+        
+    except Exception as e:
+        logger.error(f"Error parsing JSON3 data: {str(e)}")
+        return None
+
+
+def parse_vtt_data(vtt_content):
+    """
+    Parse VTT (WebVTT) subtitle format
+    """
+    try:
+        lines = vtt_content.strip().split('\n')
+        segments = []
+        current_segment = {}
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # Skip WEBVTT header and empty lines
+            if line == 'WEBVTT' or line == '' or line.startswith('NOTE'):
+                i += 1
+                continue
+            
+            # Check if this line contains timestamp
+            if '-->' in line:
+                # Parse timestamp line
+                timestamp_match = re.match(r'(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})', line)
+                if timestamp_match:
+                    start_time = vtt_time_to_seconds(timestamp_match.group(1))
+                    end_time = vtt_time_to_seconds(timestamp_match.group(2))
+                    
+                    # Collect text lines until next timestamp or end
+                    text_lines = []
+                    i += 1
+                    while i < len(lines) and '-->' not in lines[i] and lines[i].strip() != '':
+                        text_line = lines[i].strip()
+                        if text_line:
+                            # Remove VTT formatting tags
+                            text_line = re.sub(r'<[^>]+>', '', text_line)
+                            text_lines.append(text_line)
+                        i += 1
+                    
+                    if text_lines:
+                        text = ' '.join(text_lines)
+                        # Decode HTML entities
+                        text = html.unescape(text)
+                        
+                        segments.append({
+                            'start': start_time,
+                            'end': end_time,
+                            'text': text
+                        })
+                    continue
+            
+            i += 1
+        
+        logger.info(f"Parsed {len(segments)} VTT segments")
+        return segments
+        
+    except Exception as e:
+        logger.error(f"Error parsing VTT data: {str(e)}")
+        return None
+
+
+def parse_srt_data(srt_content):
+    """
+    Parse SRT subtitle format
+    """
+    try:
+        # Split by double newlines to get subtitle blocks
+        blocks = re.split(r'\n\s*\n', srt_content.strip())
+        segments = []
+        
+        for block in blocks:
+            lines = block.strip().split('\n')
+            if len(lines) < 3:
+                continue
+                
+            # First line should be sequence number
+            if not lines[0].strip().isdigit():
+                continue
+                
+            # Second line should be timestamp
+            timestamp_line = lines[1].strip()
+            timestamp_match = re.match(r'(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})', timestamp_line)
+            
+            if timestamp_match:
+                start_time = srt_time_to_seconds(timestamp_match.group(1))
+                end_time = srt_time_to_seconds(timestamp_match.group(2))
+                
+                # Remaining lines are text
+                text_lines = [line.strip() for line in lines[2:] if line.strip()]
+                if text_lines:
+                    text = ' '.join(text_lines)
+                    # Decode HTML entities
+                    text = html.unescape(text)
+                    
+                    segments.append({
+                        'start': start_time,
+                        'end': end_time,
+                        'text': text
+                    })
+        
+        logger.info(f"Parsed {len(segments)} SRT segments")
+        return segments
+        
+    except Exception as e:
+        logger.error(f"Error parsing SRT data: {str(e)}")
+        return None
+
+
+def vtt_time_to_seconds(time_str):
+    """
+    Convert VTT time format (HH:MM:SS.mmm) to seconds
+    """
+    try:
+        # Handle both HH:MM:SS.mmm and MM:SS.mmm formats
+        if time_str.count(':') == 2:
+            # HH:MM:SS.mmm format
+            hours, minutes, seconds = time_str.split(':')
+            hours = int(hours)
+        else:
+            # MM:SS.mmm format (treat as 0 hours)
+            hours = 0
+            minutes, seconds = time_str.split(':')
+        
+        minutes = int(minutes)
+        seconds = float(seconds)
+        
+        return hours * 3600 + minutes * 60 + seconds
+        
+    except Exception as e:
+        logger.warning(f"Error parsing VTT time '{time_str}': {str(e)}")
+        return 0.0
+
+
+def srt_time_to_seconds(time_str):
+    """
+    Convert SRT time format (HH:MM:SS,mmm) to seconds
+    """
+    try:
+        # Replace comma with dot for milliseconds
+        time_str = time_str.replace(',', '.')
+        hours, minutes, seconds = time_str.split(':')
+        hours = int(hours)
+        minutes = int(minutes)
+        seconds = float(seconds)
+        
+        return hours * 3600 + minutes * 60 + seconds
+        
+    except Exception as e:
+        logger.warning(f"Error parsing SRT time '{time_str}': {str(e)}")
+        return 0.0
+
+
+def get_video_info_with_ytdlp(video_id):
+    """
+    Get video information using yt-dlp
+    """
+    logger.info(f"Getting video info for {video_id} using yt-dlp")
+    
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            
+            if info:
+                return {
+                    'title': info.get('title', ''),
+                    'duration': info.get('duration', 0),
+                    'uploader': info.get('uploader', ''),
+                    'upload_date': info.get('upload_date', ''),
+                    'view_count': info.get('view_count', 0),
+                    'description': info.get('description', '')
+                }
+            else:
+                logger.error(f"No video info found for {video_id}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Error getting video info with yt-dlp for {video_id}: {str(e)}")
+        return None

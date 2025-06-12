@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
 from config import CHANNEL_PREFIX, LANGUAGE_ALL, VIDEO_PREFIX, VISIBILITY_ALL
-from flask_jwt_extended import JWTManager, jwt_required
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 from werkzeug.utils import secure_filename
 from auth import auth_ns
@@ -15,7 +15,7 @@ from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
 from payment_zpay import payment_zpay_ns
-from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
+from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file, download_transcript_with_ytdlp, get_video_info_with_ytdlp
 from redis_manager import RedisManager
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -344,7 +344,7 @@ class YouTubeVideoList(Resource):
     @jwt_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     @ns.param('data', 'JSON array of video data', type='string', required=True)
-    @ns.param('transcript_files', 'Transcript files', type='file', required=True)
+    @ns.param('transcript_files', 'Transcript files (optional)', type='file', required=False)
     def post(self):
         try:
             data = json.loads(request.form.get('data', '[]'))
@@ -352,21 +352,31 @@ class YouTubeVideoList(Resource):
             uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
             os.makedirs(uploads_dir, exist_ok=True)
 
-            if not data or len(data) != len(transcript_files):
-                logger.warning("Invalid input: data and transcript files mismatch")
-                return {"error": "Invalid input. Data and transcript files must match."}, 400
+            if not data:
+                logger.warning("Invalid input: data is required")
+                return {"error": "Invalid input. Data is required."}, 400
 
             results = []
             duplicate_video_ids = []
-            for video_data, transcript_file in zip(data, transcript_files):
+            
+            # Create a mapping of video IDs to uploaded files
+            file_mapping = {}
+            for file in transcript_files:
+                if file and file.filename:
+                    # Extract video ID from filename (assuming format: video_id.srt)
+                    filename = secure_filename(file.filename)
+                    video_id_from_file = filename.replace('.srt', '')
+                    file_mapping[video_id_from_file] = file
+
+            for video_data in data:
                 channel_id = video_data.get('channel_id')
                 video_link = video_data.get('video_link')
                 title = video_data.get('title')
                 visibility = video_data.get('visibility', 'hidden')
 
-                if not channel_id or not video_link or not title:
+                if not channel_id or not video_link:
                     logger.warning(f"Invalid input for video: {video_link}")
-                    results.append({"error": f"Invalid input for video: {video_link}. channel_id, video_link, and title are required."})
+                    results.append({"error": f"Invalid input for video: {video_link}. channel_id and video_link are required."})
                     continue
 
                 channel_key = f"{CHANNEL_PREFIX}{channel_id}"
@@ -389,23 +399,67 @@ class YouTubeVideoList(Resource):
                     results.append({"duplicate": video_id})
                     continue
 
-                # Save the uploaded transcript file
-                filename = secure_filename(f"{video_id}.srt")
-                file_path = os.path.join(uploads_dir, filename)
-                try:
-                    transcript_file.save(file_path)
-                    logger.info(f"File saved successfully: {file_path}")
-                except Exception as e:
-                    logger.error(f"Error saving file {filename}: {str(e)}")
-                    results.append({"error": f"Error saving file for video {video_id}: {str(e)}"})
-                    continue
+                # Try to get transcript from uploaded file first
+                transcript = None
+                transcript_source = "unknown"
+                
+                if video_id in file_mapping:
+                    # Use uploaded SRT file
+                    try:
+                        filename = secure_filename(f"{video_id}.srt")
+                        file_path = os.path.join(uploads_dir, filename)
+                        file_mapping[video_id].save(file_path)
+                        logger.info(f"File saved successfully: {file_path}")
+                        
+                        transcript = parse_srt_file(file_path)
+                        if transcript:
+                            transcript_source = "uploaded_srt"
+                            logger.info(f"Successfully parsed uploaded SRT file for video {video_id}")
+                        else:
+                            logger.warning(f"Failed to parse uploaded SRT file for video {video_id}")
+                    except Exception as e:
+                        logger.error(f"Error processing uploaded SRT file for video {video_id}: {str(e)}")
 
-                # Parse the SRT file
-                transcript = parse_srt_file(file_path)
+                # If no transcript from uploaded file, try to download using yt-dlp
                 if transcript is None:
-                    logger.error(f"Unable to parse SRT file for video: {video_link}")
-                    results.append({"error": f"Unable to parse SRT file for video: {video_link}"})
-                    continue
+                    try:
+                        logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp")
+                        yt_dlp_transcript = download_transcript_with_ytdlp(video_id)
+                        if yt_dlp_transcript:
+                            # Convert yt-dlp format to our standard format
+                            transcript = []
+                            for segment in yt_dlp_transcript:
+                                transcript.append({
+                                    'start': segment.get('start', 0),
+                                    'end': segment.get('end', 0),
+                                    'transcript': segment.get('text', '')
+                                })
+                            transcript_source = "ytdlp_download"
+                            logger.info(f"Successfully downloaded transcript for video {video_id} using yt-dlp")
+                        else:
+                            logger.warning(f"Failed to download transcript for video {video_id}")
+                    except Exception as e:
+                        logger.error(f"Error downloading transcript for video {video_id}: {str(e)}")
+
+                # If still no transcript, continue without transcript (optional)
+                if transcript is None:
+                    logger.warning(f"No transcript available for video {video_id}, saving video without transcript")
+                    transcript = []
+                    transcript_source = "none"
+
+                # Get video title if not provided
+                if not title:
+                    try:
+                        video_info = get_video_info_with_ytdlp(video_id)
+                        if video_info and video_info.get('title'):
+                            title = video_info['title']
+                            logger.info(f"Retrieved title for video {video_id}: {title}")
+                        else:
+                            title = f"Video {video_id}"  # Fallback title
+                            logger.warning(f"Could not retrieve title for video {video_id}, using fallback")
+                    except Exception as e:
+                        title = f"Video {video_id}"  # Fallback title
+                        logger.error(f"Error retrieving title for video {video_id}: {str(e)}")
 
                 video_info = {
                     "link": video_link,
@@ -413,9 +467,10 @@ class YouTubeVideoList(Resource):
                     "title": title,
                     "visibility": visibility,
                     "transcript": json.dumps(transcript),
+                    "transcript_source": transcript_source,
                     "created_at": int(datetime.now().timestamp() * 1000)
                 }
-                redis_resource_client.hmset(video_key, video_info)
+                redis_resource_client.hset(video_key, mapping=video_info)
 
                 # Add video_id to channel's 'videos' field (JSON array in hash)
                 videos_json = redis_resource_client.hget(channel_key, 'videos')
@@ -427,8 +482,12 @@ class YouTubeVideoList(Resource):
                     videos_list.append(video_id)
                     redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
 
-                logger.info(f"Successfully saved/updated video {video_id} for channel {channel_id}")
-                results.append({"success": f"Video {video_id} saved/updated successfully for channel {channel_id}"})
+                logger.info(f"Successfully saved video {video_id} for channel {channel_id} with transcript source: {transcript_source}")
+                results.append({
+                    "success": f"Video {video_id} saved successfully for channel {channel_id}",
+                    "transcript_source": transcript_source,
+                    "transcript_count": len(transcript) if transcript else 0
+                })
 
             if duplicate_video_ids:
                 return {
@@ -878,7 +937,6 @@ def schedule_check_expired_plans():
     except Exception as e:
         print(f"Error in scheduled check_expired_plans: {e}")
     # check every 300 seconds
-    logger.info("Scheduling check_expired_plans for every 300 seconds")
     threading.Timer(300, schedule_check_expired_plans).start()
 
 def start_initial_check_expired_plans():
