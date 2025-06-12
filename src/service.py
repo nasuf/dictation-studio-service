@@ -945,6 +945,134 @@ class ChannelTranscriptSummary(Resource):
             logger.error(f"Error retrieving transcript summary for channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving transcript summary: {str(e)}"}, 500
 
+# Common function to update visibility for a single video
+def update_video_visibility(channel_id, video_id, visibility):
+    """
+    Common function to update visibility for a single video
+    Returns (success, message, status_code)
+    """
+    try:
+        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+        video_info = redis_resource_client.hgetall(video_key)
+        
+        if not video_info:
+            return False, f"Video {video_id} not found in channel {channel_id}", 404
+
+        # Update visibility and timestamp
+        video_info['visibility'] = visibility
+        video_info['updated_at'] = int(datetime.now().timestamp() * 1000)
+
+        # Save to Redis
+        redis_resource_client.hmset(video_key, video_info)
+        logger.info(f"Successfully updated visibility for video {video_id} in channel {channel_id} to {visibility}")
+        return True, f"Video {video_id} visibility updated successfully", 200
+
+    except Exception as e:
+        logger.error(f"Error updating visibility for video {video_id}: {str(e)}")
+        return False, f"Error updating visibility for video {video_id}: {str(e)}", 500
+
+def process_single_video_visibility_update(channel_id, video_id, visibility):
+    """Process a single video visibility update in a thread"""
+    success, message, status_code = update_video_visibility(channel_id, video_id, visibility)
+    
+    return {
+        "video_id": video_id,
+        "success": success,
+        "message": message,
+        "status_code": status_code
+    }
+
+# Model for batch visibility update
+batch_visibility_update_model = api.model('BatchVisibilityUpdate', {
+    'visibility': fields.String(required=True, description='New visibility setting for all videos (public, hidden, or user:user_id)')
+})
+
+@ns.route('/<string:channel_id>/batch-visibility-update')
+class BatchVideoVisibilityUpdate(Resource):
+    @jwt_required()
+    @ns.expect(batch_visibility_update_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, channel_id):
+        """Update visibility for all videos in a channel using multithreading"""
+        try:
+            data = request.json
+            new_visibility = data.get('visibility')
+            
+            if not new_visibility:
+                logger.warning("Visibility parameter is required")
+                return {"error": "Visibility parameter is required"}, 400
+
+            # Get all videos in the channel
+            pattern = f"{VIDEO_PREFIX}{channel_id}:*"
+            video_keys = list(redis_resource_client.scan_iter(pattern))
+            
+            if not video_keys:
+                logger.warning(f"No videos found in channel {channel_id}")
+                return {"error": f"No videos found in channel {channel_id}"}, 404
+
+            # Extract video IDs from keys
+            video_ids = []
+            for video_key in video_keys:
+                # Extract video_id from key format: "video:channel_id:video_id"
+                video_id = video_key.split(':')[-1]
+                video_ids.append(video_id)
+
+            results = []
+            success_count = 0
+            error_count = 0
+            
+            # Use ThreadPoolExecutor for concurrent processing
+            max_workers = min(10, len(video_ids))  # Limit to 10 concurrent threads
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_video = {
+                    executor.submit(process_single_video_visibility_update, channel_id, video_id, new_visibility): video_id
+                    for video_id in video_ids
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_video):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        
+                        if result["success"]:
+                            success_count += 1
+                        else:
+                            error_count += 1
+                            
+                    except Exception as e:
+                        video_id = future_to_video[future]
+                        error_result = {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Thread execution error: {str(e)}",
+                            "status_code": 500
+                        }
+                        results.append(error_result)
+                        error_count += 1
+                        logger.error(f"Thread execution error for video {video_id}: {str(e)}")
+
+            # Sort results by video_id for consistent ordering
+            results.sort(key=lambda x: x.get('video_id', ''))
+
+            logger.info(f"Batch visibility update completed for channel {channel_id}: {success_count} success, {error_count} errors")
+            
+            return {
+                "message": f"Batch visibility update completed: {success_count} successful, {error_count} failed",
+                "channel_id": channel_id,
+                "new_visibility": new_visibility,
+                "total_videos": len(video_ids),
+                "success_count": success_count,
+                "error_count": error_count,
+                "results": results
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error in batch visibility update: {str(e)}")
+            return {"error": f"Error in batch visibility update: {str(e)}"}, 500
+
 # Add user namespace to API
 if __name__ == '__main__':
     # Only start the timer in the main process, not in the reloader process
