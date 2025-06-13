@@ -358,146 +358,247 @@ class YouTubeVideoList(Resource):
 
             results = []
             duplicate_video_ids = []
-            
-            # Create a mapping of video IDs to uploaded files
             file_mapping = {}
             for file in transcript_files:
                 if file and file.filename:
-                    # Extract video ID from filename (assuming format: video_id.srt)
                     filename = secure_filename(file.filename)
                     video_id_from_file = filename.replace('.srt', '')
                     file_mapping[video_id_from_file] = file
 
-            for video_data in data:
+            def process_single_video(video_data):
                 channel_id = video_data.get('channel_id')
                 video_link = video_data.get('video_link')
                 title = video_data.get('title')
                 visibility = video_data.get('visibility', 'hidden')
 
-                if not channel_id or not video_link:
-                    logger.warning(f"Invalid input for video: {video_link}")
-                    results.append({"error": f"Invalid input for video: {video_link}. channel_id and video_link are required."})
-                    continue
-
-                channel_key = f"{CHANNEL_PREFIX}{channel_id}"
-                if not redis_resource_client.exists(channel_key):
-                    logger.warning(f"Channel with id {channel_id} does not exist")
-                    results.append({"error": f"Channel with id {channel_id} does not exist."})
-                    continue
-
-                video_id = get_video_id(video_link)
-                if not video_id:
-                    logger.warning(f"Invalid YouTube URL: {video_link}")
-                    results.append({"error": f"Invalid YouTube URL: {video_link}"})
-                    continue
-
-                video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
-                # If video_key already exists, skip and collect duplicate
-                if redis_resource_client.exists(video_key):
-                    logger.info(f"Duplicate video: {video_id} in channel {channel_id}, skipping update.")
-                    duplicate_video_ids.append(video_id)
-                    results.append({"duplicate": video_id})
-                    continue
-
-                # Try to get transcript from uploaded file first
-                transcript = None
-                transcript_source = "unknown"
-                
-                if video_id in file_mapping:
-                    # Use uploaded SRT file
-                    try:
-                        filename = secure_filename(f"{video_id}.srt")
-                        file_path = os.path.join(uploads_dir, filename)
-                        file_mapping[video_id].save(file_path)
-                        logger.info(f"File saved successfully: {file_path}")
-                        
-                        transcript = parse_srt_file(file_path)
-                        if transcript:
-                            transcript_source = "uploaded_srt"
-                            logger.info(f"Successfully parsed uploaded SRT file for video {video_id}")
-                        else:
-                            logger.warning(f"Failed to parse uploaded SRT file for video {video_id}")
-                    except Exception as e:
-                        logger.error(f"Error processing uploaded SRT file for video {video_id}: {str(e)}")
-
-                # If no transcript from uploaded file, try to download using yt-dlp
-                if transcript is None:
-                    try:
-                        # Get channel language for subtitle download
-                        channel_language = redis_resource_client.hget(channel_key, 'language') or 'en'
-                        logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp (channel language: {channel_language})")
-                        yt_dlp_transcript = download_transcript_with_ytdlp(video_id, channel_language)
-                        if yt_dlp_transcript:
-                            # Convert yt-dlp format to our standard format
-                            transcript = []
-                            for segment in yt_dlp_transcript:
-                                transcript.append({
-                                    'start': segment.get('start', 0),
-                                    'end': segment.get('end', 0),
-                                    'transcript': segment.get('text', '')
-                                })
-                            transcript_source = "ytdlp_download"
-                            logger.info(f"Successfully downloaded transcript for video {video_id} using yt-dlp")
-                        else:
-                            logger.warning(f"Failed to download transcript for video {video_id}")
-                    except Exception as e:
-                        logger.error(f"Error downloading transcript for video {video_id}: {str(e)}")
-
-                # If still no transcript, continue without transcript (optional)
-                if transcript is None:
-                    logger.warning(f"No transcript available for video {video_id}, saving video without transcript")
-                    transcript = []
-                    transcript_source = "none"
-
-                # Get video title if not provided
-                if not title:
-                    try:
-                        video_info = get_video_info_with_ytdlp(video_id)
-                        if video_info and video_info.get('title'):
-                            title = video_info['title']
-                            logger.info(f"Retrieved title for video {video_id}: {title}")
-                        else:
-                            title = f"Video {video_id}"  # Fallback title
-                            logger.warning(f"Could not retrieve title for video {video_id}, using fallback")
-                    except Exception as e:
-                        title = f"Video {video_id}"  # Fallback title
-                        logger.error(f"Error retrieving title for video {video_id}: {str(e)}")
-
-                video_info = {
-                    "link": video_link,
-                    "video_id": video_id,
-                    "title": title,
-                    "visibility": visibility,
-                    "transcript": json.dumps(transcript),
-                    "transcript_source": transcript_source,
-                    "created_at": int(datetime.now().timestamp() * 1000)
-                }
-                redis_resource_client.hset(video_key, mapping=video_info)
-
-                # Add video_id to channel's 'videos' field (JSON array in hash)
-                videos_json = redis_resource_client.hget(channel_key, 'videos')
+                video_id = None
                 try:
-                    videos_list = json.loads(videos_json) if videos_json else []
-                except Exception:
-                    videos_list = []
-                if video_id not in videos_list:
-                    videos_list.append(video_id)
-                    redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
+                    if not channel_id or not video_link:
+                        logger.warning(f"Invalid input for video: {video_link}")
+                        return {
+                            "video_id": None,
+                            "success": False,
+                            "message": f"Invalid input for video: {video_link}. channel_id and video_link are required."
+                        }
 
-                logger.info(f"Successfully saved video {video_id} for channel {channel_id} with transcript source: {transcript_source}")
-                results.append({
-                    "success": f"Video {video_id} saved successfully for channel {channel_id}",
-                    "transcript_source": transcript_source,
-                    "transcript_count": len(transcript) if transcript else 0
-                })
+                    channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+                    if not redis_resource_client.exists(channel_key):
+                        logger.warning(f"Channel with id {channel_id} does not exist")
+                        return {
+                            "video_id": None,
+                            "success": False,
+                            "message": f"Channel with id {channel_id} does not exist."
+                        }
 
+                    video_id = get_video_id(video_link)
+                    if not video_id:
+                        logger.warning(f"Invalid YouTube URL: {video_link}")
+                        return {
+                            "video_id": None,
+                            "success": False,
+                            "message": f"Invalid YouTube URL: {video_link}"
+                        }
+
+                    video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+                    if redis_resource_client.exists(video_key):
+                        logger.info(f"Duplicate video: {video_id} in channel {channel_id}, skipping update.")
+                        return {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Video {video_id} already exists in channel {channel_id}",
+                            "duplicate": True
+                        }
+
+                    transcript = None
+                    transcript_source = "unknown"
+                    transcript_processing_failed = False
+                    
+                    # Try to get transcript from uploaded SRT file first
+                    if video_id in file_mapping:
+                        try:
+                            filename = secure_filename(f"{video_id}.srt")
+                            file_path = os.path.join(uploads_dir, filename)
+                            file_mapping[video_id].save(file_path)
+                            logger.info(f"File saved successfully: {file_path}")
+                            transcript = parse_srt_file(file_path)
+                            if transcript:
+                                transcript_source = "uploaded_srt"
+                                logger.info(f"Successfully parsed uploaded SRT file for video {video_id}")
+                            else:
+                                logger.error(f"Failed to parse uploaded SRT file for video {video_id}")
+                                transcript_processing_failed = True
+                        except Exception as e:
+                            logger.error(f"Error processing uploaded SRT file for video {video_id}: {str(e)}")
+                            transcript_processing_failed = True
+                    
+                    # If no SRT file or parsing failed, try yt-dlp download
+                    if transcript is None and not transcript_processing_failed:
+                        try:
+                            channel_language = redis_resource_client.hget(channel_key, 'language') or 'en'
+                            logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp (channel language: {channel_language})")
+                            yt_dlp_transcript = download_transcript_with_ytdlp(video_id, channel_language)
+                            if yt_dlp_transcript:
+                                transcript = []
+                                for segment in yt_dlp_transcript:
+                                    transcript.append({
+                                        'start': segment.get('start', 0),
+                                        'end': segment.get('end', 0),
+                                        'transcript': segment.get('text', '')
+                                    })
+                                transcript_source = "ytdlp_download"
+                                logger.info(f"Successfully downloaded transcript for video {video_id} using yt-dlp")
+                            else:
+                                logger.warning(f"Failed to download transcript for video {video_id} using yt-dlp")
+                                transcript_processing_failed = True
+                        except Exception as e:
+                            logger.error(f"Error downloading transcript for video {video_id}: {str(e)}")
+                            transcript_processing_failed = True
+                    
+                    # Check if we should proceed based on transcript processing results
+                    # In production environment, transcript is required; in localhost, it's optional
+                    is_localhost = os.getenv('FLASK_ENV') == 'development' or os.getenv('ENVIRONMENT') == 'localhost'
+                    
+                    if transcript_processing_failed and not is_localhost:
+                        # In production, if transcript processing failed, don't save the video
+                        logger.error(f"Transcript processing failed for video {video_id} in production environment, not saving video")
+                        return {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Transcript processing failed for video {video_id}. Video not saved."
+                        }
+                    
+                    # If we reach here, either transcript processing succeeded or we're in localhost
+                    if transcript is None:
+                        if is_localhost:
+                            logger.warning(f"No transcript available for video {video_id} in localhost environment, saving video without transcript")
+                            transcript = []
+                            transcript_source = "none"
+                        else:
+                            # This shouldn't happen due to the check above, but just in case
+                            logger.error(f"No transcript available for video {video_id} in production environment")
+                            return {
+                                "video_id": video_id,
+                                "success": False,
+                                "message": f"No transcript available for video {video_id}. Video not saved."
+                            }
+                    
+                    # Get title if not provided
+                    if not title:
+                        try:
+                            video_info = get_video_info_with_ytdlp(video_id)
+                            if video_info and video_info.get('title'):
+                                title = video_info['title']
+                                logger.info(f"Retrieved title for video {video_id}: {title}")
+                            else:
+                                title = f"Video {video_id}"
+                                logger.warning(f"Could not retrieve title for video {video_id}, using fallback")
+                        except Exception as e:
+                            title = f"Video {video_id}"
+                            logger.error(f"Error retrieving title for video {video_id}: {str(e)}")
+                    
+                    # Save video info to Redis
+                    video_info = {
+                        "link": video_link,
+                        "video_id": video_id,
+                        "title": title,
+                        "visibility": visibility,
+                        "transcript": json.dumps(transcript),
+                        "transcript_source": transcript_source,
+                        "created_at": int(datetime.now().timestamp() * 1000)
+                    }
+                    redis_resource_client.hset(video_key, mapping=video_info)
+                    
+                    # Update channel's video list
+                    videos_json = redis_resource_client.hget(channel_key, 'videos')
+                    try:
+                        videos_list = json.loads(videos_json) if videos_json else []
+                    except Exception:
+                        videos_list = []
+                    if video_id not in videos_list:
+                        videos_list.append(video_id)
+                        redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
+                    
+                    success_message = f"Video {video_id} saved successfully for channel {channel_id}"
+                    if transcript_source == "none":
+                        success_message += " (without transcript)"
+                    
+                    logger.info(f"Successfully saved video {video_id} for channel {channel_id} with transcript source: {transcript_source}")
+                    return {
+                        "video_id": video_id,
+                        "success": True,
+                        "message": success_message,
+                        "transcript_source": transcript_source,
+                        "transcript_count": len(transcript) if transcript else 0
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Error processing video {video_link}: {str(e)}")
+                    return {
+                        "video_id": video_id,
+                        "success": False,
+                        "message": f"Error processing video: {str(e)}"
+                    }
+
+            # Process all videos concurrently with ThreadPoolExecutor
+            results = []
+            duplicate_video_ids = []
+            success_count = 0
+            error_count = 0
+            
+            # Use ThreadPoolExecutor for concurrent processing
+            max_workers = min(5, len(data))  # Limit to 5 concurrent threads
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_video = {
+                    executor.submit(process_single_video, video_data): video_data
+                    for video_data in data
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_video):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        
+                        if result.get("duplicate"):
+                            duplicate_video_ids.append(result["video_id"])
+                        elif result.get("success"):
+                            success_count += 1
+                        else:
+                            error_count += 1
+                            
+                    except Exception as e:
+                        video_data = future_to_video[future]
+                        video_link = video_data.get('video_link', 'unknown')
+                        error_result = {
+                            "video_id": None,
+                            "success": False,
+                            "message": f"Thread execution error: {str(e)}"
+                        }
+                        results.append(error_result)
+                        error_count += 1
+                        logger.error(f"Thread execution error for video {video_link}: {str(e)}")
+
+            # Sort results by video_id for consistent ordering
+            results.sort(key=lambda x: x.get('video_id') or '')
+
+            # Prepare response
+            response = {
+                "results": results,
+                "total_videos": len(data),
+                "success_count": success_count,
+                "error_count": error_count
+            }
+            
             if duplicate_video_ids:
-                return {
-                    "message": "partially success",
-                    "results": results,
-                    "duplicate_video_ids": duplicate_video_ids
-                }, 200
-            return {"results": results}, 200
+                response["message"] = "partially success"
+                response["duplicate_video_ids"] = duplicate_video_ids
+            else:
+                response["message"] = "success" if error_count == 0 else "partially success"
+            
+            logger.info(f"Video upload completed: {success_count} success, {error_count} errors, {len(duplicate_video_ids)} duplicates")
+            return response, 200
         except Exception as e:
             logger.error(f"Error saving video list: {str(e)}")
             return {"error": f"Error saving video list with transcripts: {str(e)}"}, 500

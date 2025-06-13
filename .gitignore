@@ -60,6 +60,7 @@ dump.rdb
 
 setup.sh
 startup.sh
+sync_youtube_cookies.sh
 
 *.md
 test*.py
