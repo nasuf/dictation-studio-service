@@ -1150,6 +1150,7 @@ def apply_filters_to_transcript(transcript, filters):
     filtered_transcript = []
     filter_stats = {filter_text: 0 for filter_text in filters}
     
+    # First pass: apply filters and identify empty items
     for item in transcript:
         original_text = item.get('transcript', '')
         filtered_text = original_text
@@ -1169,14 +1170,51 @@ def apply_filters_to_transcript(transcript, filters):
             # Clean up extra spaces
             filtered_text = re.sub(r'\s+', ' ', filtered_text).strip()
         
-        # Always include the item, even if it becomes empty after filtering
+        # Add item with filtered text and mark if it's empty
         filtered_transcript.append({
             'start': item.get('start', 0),
             'end': item.get('end', 0),
-            'transcript': filtered_text
+            'transcript': filtered_text,
+            'is_empty': len(filtered_text) == 0
         })
     
-    return filtered_transcript, filter_stats
+    # Second pass: adjust timestamps for empty items
+    for i, item in enumerate(filtered_transcript):
+        if item.get('is_empty', False):
+            current_start = item['start']
+            current_end = item['end']
+            
+            # Find previous non-empty item
+            prev_index = i - 1
+            while prev_index >= 0 and filtered_transcript[prev_index].get('is_empty', False):
+                prev_index -= 1
+            
+            # Find next non-empty item
+            next_index = i + 1
+            while next_index < len(filtered_transcript) and filtered_transcript[next_index].get('is_empty', False):
+                next_index += 1
+            
+            # Apply the corrected logic:
+            # 1. If previous sentence exists, extend its end time to current item's end time, then stop processing
+            if prev_index >= 0:
+                filtered_transcript[prev_index]['end'] = current_end
+            # 2. Otherwise (no previous sentence), if next sentence exists, move next sentence's start time to current item's start time
+            elif next_index < len(filtered_transcript):
+                filtered_transcript[next_index]['start'] = current_start
+    
+    # Third pass: remove empty items and clean up the is_empty flag
+    final_transcript = []
+    for item in filtered_transcript:
+        if not item.get('is_empty', False):
+            # Remove the is_empty flag before adding to final result
+            final_item = {
+                'start': item['start'],
+                'end': item['end'],
+                'transcript': item['transcript']
+            }
+            final_transcript.append(final_item)
+    
+    return final_transcript, filter_stats
 
 def process_single_video_filter_application(channel_id, video_id, filters):
     """Process filter application for a single video in a thread"""
