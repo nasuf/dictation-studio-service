@@ -1143,6 +1143,120 @@ def process_single_video_visibility_update(channel_id, video_id, visibility):
         "status_code": status_code
     }
 
+def apply_filters_to_transcript(transcript, filters):
+    """Apply filters to a transcript and return the filtered transcript with filter statistics"""
+    import re
+    
+    filtered_transcript = []
+    filter_stats = {filter_text: 0 for filter_text in filters}
+    
+    for item in transcript:
+        original_text = item.get('transcript', '')
+        filtered_text = original_text
+        
+        # Apply each filter to remove matching text and count occurrences
+        for filter_text in filters:
+            # Create a case-insensitive regex to match the filter text
+            regex = re.compile(re.escape(filter_text), re.IGNORECASE)
+            
+            # Count matches before removing them
+            matches = regex.findall(filtered_text)
+            filter_stats[filter_text] += len(matches)
+            
+            # Remove the matched text
+            filtered_text = regex.sub('', filtered_text).strip()
+            
+            # Clean up extra spaces
+            filtered_text = re.sub(r'\s+', ' ', filtered_text).strip()
+        
+        # Always include the item, even if it becomes empty after filtering
+        filtered_transcript.append({
+            'start': item.get('start', 0),
+            'end': item.get('end', 0),
+            'transcript': filtered_text
+        })
+    
+    return filtered_transcript, filter_stats
+
+def process_single_video_filter_application(channel_id, video_id, filters):
+    """Process filter application for a single video in a thread"""
+    try:
+        video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+        video_data = redis_resource_client.hgetall(video_key)
+        
+        if not video_data:
+            return {
+                "video_id": video_id,
+                "success": False,
+                "message": f"Video {video_id} not found in channel {channel_id}",
+                "status_code": 404
+            }
+
+        # Get current transcript
+        try:
+            current_transcript = json.loads(video_data.get('transcript', '[]'))
+        except Exception as e:
+            return {
+                "video_id": video_id,
+                "success": False,
+                "message": f"Failed to parse transcript for video {video_id}: {str(e)}",
+                "status_code": 500
+            }
+
+        if not current_transcript:
+            return {
+                "video_id": video_id,
+                "success": False,
+                "message": f"No transcript found for video {video_id}",
+                "status_code": 404
+            }
+
+        # Save original transcript if not already saved
+        if 'original_transcript' not in video_data:
+            redis_resource_client.hset(video_key, 'original_transcript', json.dumps(current_transcript))
+
+        # Apply filters to transcript
+        filtered_transcript, filter_stats = apply_filters_to_transcript(current_transcript, filters)
+        
+        # Update transcript in Redis
+        redis_resource_client.hset(video_key, 'transcript', json.dumps(filtered_transcript))
+        redis_resource_client.hset(video_key, 'updated_at', int(datetime.now().timestamp() * 1000))
+        
+        # Calculate total changes made
+        total_changes = sum(filter_stats.values())
+        
+        # Create detailed filter statistics message
+        filter_details = []
+        for filter_text, count in filter_stats.items():
+            if count > 0:
+                filter_details.append(f"'{filter_text}': {count} times")
+        
+        if filter_details:
+            details_message = f"Filters applied: {', '.join(filter_details)} (Total: {total_changes} changes)"
+        else:
+            details_message = "No filter matches found in this transcript"
+        
+        logger.info(f"Applied {len(filters)} filters to video {video_id}: {total_changes} total changes")
+        
+        return {
+            "video_id": video_id,
+            "success": True,
+            "message": details_message,
+            "status_code": 200,
+            "total_changes": total_changes,
+            "filter_stats": filter_stats,
+            "filters_applied": len(filters)
+        }
+
+    except Exception as e:
+        logger.error(f"Error applying filters to video {video_id}: {str(e)}")
+        return {
+            "video_id": video_id,
+            "success": False,
+            "message": f"Error applying filters to video {video_id}: {str(e)}",
+            "status_code": 500
+        }
+
 # Model for batch visibility update
 batch_visibility_update_model = api.model('BatchVisibilityUpdate', {
     'visibility': fields.String(required=True, description='New visibility setting for all videos (public, hidden, or user:user_id)')
@@ -1151,6 +1265,12 @@ batch_visibility_update_model = api.model('BatchVisibilityUpdate', {
 # Model for transcript filters
 transcript_filters_model = api.model('TranscriptFilters', {
     'filters': fields.List(fields.String, required=True, description='List of filter strings to save')
+})
+
+# Model for batch apply filters
+batch_apply_filters_model = api.model('BatchApplyFilters', {
+    'video_ids': fields.List(fields.String, required=True, description='List of video IDs to apply filters to'),
+    'filters': fields.List(fields.String, required=True, description='List of filter strings to apply')
 })
 
 @ns.route('/<string:channel_id>/batch-visibility-update')
@@ -1293,6 +1413,82 @@ class TranscriptFilters(Resource):
         except Exception as e:
             logger.error(f"Error retrieving transcript filters for channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving transcript filters: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/batch-apply-filters')
+class BatchApplyFilters(Resource):
+    @jwt_required()
+    @ns.expect(batch_apply_filters_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def post(self, channel_id):
+        """Apply filters to multiple videos in a channel using multithreading"""
+        try:
+            data = request.json
+            video_ids = data.get('video_ids', [])
+            filters = data.get('filters', [])
+            
+            if not video_ids:
+                logger.warning("No video IDs provided")
+                return {"error": "Video IDs list is required"}, 400
+                
+            if not filters:
+                logger.warning("No filters provided")
+                return {"error": "Filters list is required"}, 400
+
+            results = []
+            success_count = 0
+            error_count = 0
+            
+            # Use ThreadPoolExecutor for concurrent processing
+            max_workers = min(5, len(video_ids))  # Limit to 5 concurrent threads as requested
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_video = {
+                    executor.submit(process_single_video_filter_application, channel_id, video_id, filters): video_id
+                    for video_id in video_ids
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_video):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        
+                        if result["success"]:
+                            success_count += 1
+                        else:
+                            error_count += 1
+                            
+                    except Exception as e:
+                        video_id = future_to_video[future]
+                        error_result = {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Thread execution error: {str(e)}",
+                            "status_code": 500
+                        }
+                        results.append(error_result)
+                        error_count += 1
+                        logger.error(f"Thread execution error for video {video_id}: {str(e)}")
+
+            # Sort results by video_id for consistent ordering
+            results.sort(key=lambda x: x.get('video_id', ''))
+
+            logger.info(f"Batch filter application completed for channel {channel_id}: {success_count} success, {error_count} errors")
+            
+            return {
+                "message": f"Batch filter application completed: {success_count} successful, {error_count} failed",
+                "channel_id": channel_id,
+                "total_videos": len(video_ids),
+                "success_count": success_count,
+                "error_count": error_count,
+                "filters_applied": len(filters),
+                "results": results
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error in batch filter application: {str(e)}")
+            return {"error": f"Error in batch filter application: {str(e)}"}, 500
 
 # Add user namespace to API
 if __name__ == '__main__':
