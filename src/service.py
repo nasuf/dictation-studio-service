@@ -1148,6 +1148,11 @@ batch_visibility_update_model = api.model('BatchVisibilityUpdate', {
     'visibility': fields.String(required=True, description='New visibility setting for all videos (public, hidden, or user:user_id)')
 })
 
+# Model for transcript filters
+transcript_filters_model = api.model('TranscriptFilters', {
+    'filters': fields.List(fields.String, required=True, description='List of filter strings to save')
+})
+
 @ns.route('/<string:channel_id>/batch-visibility-update')
 class BatchVideoVisibilityUpdate(Resource):
     @jwt_required()
@@ -1233,6 +1238,61 @@ class BatchVideoVisibilityUpdate(Resource):
         except Exception as e:
             logger.error(f"Error in batch visibility update: {str(e)}")
             return {"error": f"Error in batch visibility update: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/transcript-filters')
+class TranscriptFilters(Resource):
+    @jwt_required()
+    @ns.expect(transcript_filters_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
+    def post(self, channel_id):
+        """Save transcript filters for a channel"""
+        try:
+            data = request.json
+            filters = data.get('filters', [])
+            
+            if not filters:
+                logger.warning("No filters provided")
+                return {"error": "Filters list is required"}, 400
+
+            # Save filters to Redis using channel-specific key
+            filters_key = f"transcript_filters:{channel_id}"
+            redis_resource_client.set(filters_key, json.dumps(filters))
+            
+            logger.info(f"Saved {len(filters)} transcript filters for channel {channel_id}")
+            return {
+                "message": f"Successfully saved {len(filters)} filters for channel {channel_id}",
+                "filters": filters
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error saving transcript filters for channel {channel_id}: {str(e)}")
+            return {"error": f"Error saving transcript filters: {str(e)}"}, 500
+
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def get(self, channel_id):
+        """Get transcript filters for a channel"""
+        try:
+            filters_key = f"transcript_filters:{channel_id}"
+            filters_json = redis_resource_client.get(filters_key)
+            
+            if filters_json:
+                filters = json.loads(filters_json)
+                logger.info(f"Retrieved {len(filters)} transcript filters for channel {channel_id}")
+                return {
+                    "channel_id": channel_id,
+                    "filters": filters
+                }, 200
+            else:
+                logger.info(f"No transcript filters found for channel {channel_id}")
+                return {
+                    "channel_id": channel_id,
+                    "filters": []
+                }, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving transcript filters for channel {channel_id}: {str(e)}")
+            return {"error": f"Error retrieving transcript filters: {str(e)}"}, 500
 
 # Add user namespace to API
 if __name__ == '__main__':
