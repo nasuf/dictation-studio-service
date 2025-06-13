@@ -1283,7 +1283,8 @@ def process_single_video_filter_application(channel_id, video_id, filters):
             "status_code": 200,
             "total_changes": total_changes,
             "filter_stats": filter_stats,
-            "filters_applied": len(filters)
+            "filters_applied": len(filters),
+            "transcript": filtered_transcript
         }
 
     except Exception as e:
@@ -1308,6 +1309,11 @@ transcript_filters_model = api.model('TranscriptFilters', {
 # Model for batch apply filters
 batch_apply_filters_model = api.model('BatchApplyFilters', {
     'video_ids': fields.List(fields.String, required=True, description='List of video IDs to apply filters to'),
+    'filters': fields.List(fields.String, required=True, description='List of filter strings to apply')
+})
+
+# Model for single video apply filters
+single_video_apply_filters_model = api.model('SingleVideoApplyFilters', {
     'filters': fields.List(fields.String, required=True, description='List of filter strings to apply')
 })
 
@@ -1451,6 +1457,47 @@ class TranscriptFilters(Resource):
         except Exception as e:
             logger.error(f"Error retrieving transcript filters for channel {channel_id}: {str(e)}")
             return {"error": f"Error retrieving transcript filters: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/<string:video_id>/apply-filters')
+class SingleVideoApplyFilters(Resource):
+    @jwt_required()
+    @ns.expect(single_video_apply_filters_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def post(self, channel_id, video_id):
+        """Apply filters to a single video transcript"""
+        try:
+            data = request.json
+            filters = data.get('filters', [])
+            
+            if not filters:
+                logger.warning("No filters provided")
+                return {"error": "Filters list is required"}, 400
+
+            # Use the existing function to process single video filter application
+            result = process_single_video_filter_application(channel_id, video_id, filters)
+            
+            if result["success"]:
+                logger.info(f"Successfully applied {len(filters)} filters to video {video_id} in channel {channel_id}")
+                return {
+                    "message": f"Successfully applied {len(filters)} filters to video transcript",
+                    "channel_id": channel_id,
+                    "video_id": video_id,
+                    "filters_applied": len(filters),
+                    "total_changes": result.get("total_changes", 0),
+                    "filter_stats": result.get("filter_stats", {}),
+                    "transcript": result.get("transcript", [])
+                }, 200
+            else:
+                logger.error(f"Failed to apply filters to video {video_id} in channel {channel_id}: {result.get('message', 'Unknown error')}")
+                return {
+                    "error": result.get("message", "Failed to apply filters"),
+                    "channel_id": channel_id,
+                    "video_id": video_id
+                }, result.get("status_code", 500)
+
+        except Exception as e:
+            logger.error(f"Error applying filters to video {video_id} in channel {channel_id}: {str(e)}")
+            return {"error": f"Error applying filters: {str(e)}"}, 500
 
 @ns.route('/<string:channel_id>/batch-apply-filters')
 class BatchApplyFilters(Resource):
