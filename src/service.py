@@ -15,7 +15,7 @@ from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
 from payment_zpay import payment_zpay_ns
-from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file, download_transcript_with_ytdlp, get_video_info_with_ytdlp
+from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
 from redis_manager import RedisManager
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -409,93 +409,49 @@ class YouTubeVideoList(Resource):
                             "duplicate": True
                         }
 
-                    transcript = None
-                    transcript_source = "unknown"
-                    transcript_processing_failed = False
-                    
-                    # Try to get transcript from uploaded SRT file first
-                    if video_id in file_mapping:
-                        try:
-                            filename = secure_filename(f"{video_id}.srt")
-                            file_path = os.path.join(uploads_dir, filename)
-                            file_mapping[video_id].save(file_path)
-                            logger.info(f"File saved successfully: {file_path}")
-                            transcript = parse_srt_file(file_path)
-                            if transcript:
-                                transcript_source = "uploaded_srt"
-                                logger.info(f"Successfully parsed uploaded SRT file for video {video_id}")
-                            else:
-                                logger.error(f"Failed to parse uploaded SRT file for video {video_id}")
-                                transcript_processing_failed = True
-                        except Exception as e:
-                            logger.error(f"Error processing uploaded SRT file for video {video_id}: {str(e)}")
-                            transcript_processing_failed = True
-                    
-                    # If no SRT file or parsing failed, try yt-dlp download
-                    if transcript is None and not transcript_processing_failed:
-                        try:
-                            channel_language = redis_resource_client.hget(channel_key, 'language') or 'en'
-                            logger.info(f"Attempting to download transcript for video {video_id} using yt-dlp (channel language: {channel_language})")
-                            yt_dlp_transcript = download_transcript_with_ytdlp(video_id, channel_language)
-                            if yt_dlp_transcript:
-                                transcript = []
-                                for segment in yt_dlp_transcript:
-                                    transcript.append({
-                                        'start': segment.get('start', 0),
-                                        'end': segment.get('end', 0),
-                                        'transcript': segment.get('text', '')
-                                    })
-                                transcript_source = "ytdlp_download"
-                                logger.info(f"Successfully downloaded transcript for video {video_id} using yt-dlp")
-                            else:
-                                logger.warning(f"Failed to download transcript for video {video_id} using yt-dlp")
-                                transcript_processing_failed = True
-                        except Exception as e:
-                            logger.error(f"Error downloading transcript for video {video_id}: {str(e)}")
-                            transcript_processing_failed = True
-                    
-                    # Check if we should proceed based on transcript processing results
-                    # In production environment, transcript is required; in localhost, it's optional
-                    is_localhost = os.getenv('FLASK_ENV') == 'development' or os.getenv('ENVIRONMENT') == 'localhost'
-                    
-                    if transcript_processing_failed and not is_localhost:
-                        # In production, if transcript processing failed, don't save the video
-                        logger.error(f"Transcript processing failed for video {video_id} in production environment, not saving video")
+                    # SRT file is required for all videos
+                    if video_id not in file_mapping:
+                        logger.error(f"No SRT file provided for video {video_id}")
                         return {
                             "video_id": video_id,
                             "success": False,
-                            "message": f"Transcript processing failed for video {video_id}. Video not saved."
+                            "message": f"SRT file is required for video {video_id}"
                         }
                     
-                    # If we reach here, either transcript processing succeeded or we're in localhost
-                    if transcript is None:
-                        if is_localhost:
-                            logger.warning(f"No transcript available for video {video_id} in localhost environment, saving video without transcript")
-                            transcript = []
-                            transcript_source = "none"
+                    # Title is required
+                    if not title:
+                        logger.error(f"Title is required for video {video_id}")
+                        return {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Title is required for video {video_id}"
+                        }
+                    
+                    # Process uploaded SRT file
+                    transcript = None
+                    transcript_source = "uploaded_srt"
+                    try:
+                        filename = secure_filename(f"{video_id}.srt")
+                        file_path = os.path.join(uploads_dir, filename)
+                        file_mapping[video_id].save(file_path)
+                        logger.info(f"File saved successfully: {file_path}")
+                        transcript = parse_srt_file(file_path)
+                        if transcript:
+                            logger.info(f"Successfully parsed uploaded SRT file for video {video_id}")
                         else:
-                            # This shouldn't happen due to the check above, but just in case
-                            logger.error(f"No transcript available for video {video_id} in production environment")
+                            logger.error(f"Failed to parse uploaded SRT file for video {video_id}")
                             return {
                                 "video_id": video_id,
                                 "success": False,
-                                "message": f"No transcript available for video {video_id}. Video not saved."
+                                "message": f"Failed to parse SRT file for video {video_id}"
                             }
-                    
-                    # Get title if not provided
-                    if not title:
-                        try:
-                            video_info = get_video_info_with_ytdlp(video_id)
-                            if video_info and video_info.get('title'):
-                                title = video_info['title']
-                                logger.info(f"Retrieved title for video {video_id}: {title}")
-                            else:
-                                title = f"Video {video_id}"
-                                logger.warning(f"Could not retrieve title for video {video_id}, using fallback")
-                        except Exception as e:
-                            title = f"Video {video_id}"
-                            logger.error(f"Error retrieving title for video {video_id}: {str(e)}")
-                    
+                    except Exception as e:
+                        logger.error(f"Error processing uploaded SRT file for video {video_id}: {str(e)}")
+                        return {
+                            "video_id": video_id,
+                            "success": False,
+                            "message": f"Error processing SRT file for video {video_id}: {str(e)}"
+                        }
                     # Save video info to Redis
                     video_info = {
                         "link": video_link,
@@ -519,8 +475,6 @@ class YouTubeVideoList(Resource):
                         redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
                     
                     success_message = f"Video {video_id} saved successfully for channel {channel_id}"
-                    if transcript_source == "none":
-                        success_message += " (without transcript)"
                     
                     logger.info(f"Successfully saved video {video_id} for channel {channel_id} with transcript source: {transcript_source}")
                     return {
