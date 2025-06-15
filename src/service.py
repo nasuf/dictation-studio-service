@@ -9,7 +9,7 @@ from flask_cors import CORS
 from config import CHANNEL_PREFIX, LANGUAGE_ALL, VIDEO_PREFIX, VISIBILITY_ALL
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from config import JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
-from werkzeug.utils import secure_filename
+
 from auth import auth_ns
 from error_handlers import register_error_handlers
 from user import user_ns
@@ -19,6 +19,7 @@ from utils import download_transcript_from_youtube_transcript_api, get_video_id,
 from redis_manager import RedisManager
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -51,6 +52,9 @@ redis_manager = RedisManager()
 # Redis connection
 redis_resource_client = redis_manager.get_resource_client()
 redis_user_client = redis_manager.get_user_client()
+
+# Thread lock for file operations
+file_operation_lock = threading.Lock()
 
 # Input models for Swagger
 youtube_url_model = api.model('YouTubeURL', {
@@ -129,7 +133,7 @@ def restore_video_transcript(channel_id, video_id):
         # if failed to restore from original_transcript, try to restore from SRT file
         if not restored:
             uploads_dir = os.getenv('UPLOADS_DIR', './uploads')
-            filename = secure_filename(f"{video_id}.srt")
+            filename = f"{video_id}.srt"
             file_path = os.path.join(uploads_dir, filename)
 
             if not os.path.exists(file_path):
@@ -359,11 +363,31 @@ class YouTubeVideoList(Resource):
             results = []
             duplicate_video_ids = []
             file_mapping = {}
+            logger.info(f"Processing {len(transcript_files)} transcript files")
             for file in transcript_files:
                 if file and file.filename:
-                    filename = secure_filename(file.filename)
-                    video_id_from_file = filename.replace('.srt', '')
+                    original_filename = file.filename
+                    
+                    # Validate file extension
+                    if not original_filename.endswith('.srt'):
+                        logger.warning(f"Invalid file type: {original_filename}")
+                        continue
+                    
+                    # Extract video ID directly from original filename
+                    video_id_from_file = original_filename.replace('.srt', '')
+                    
+                    # Basic validation for YouTube video ID format
+                    import re
+                    if not re.match(r'^[a-zA-Z0-9_-]+$', video_id_from_file):
+                        logger.warning(f"Invalid video ID format: {video_id_from_file}")
+                        continue
+                    
                     file_mapping[video_id_from_file] = file
+                    logger.info(f"Mapped file: {original_filename} -> video_id: {video_id_from_file}")
+                else:
+                    logger.warning(f"Invalid file: {file}")
+            
+            logger.info(f"File mapping created: {list(file_mapping.keys())}")
 
             def process_single_video(video_data):
                 channel_id = video_data.get('channel_id')
@@ -391,6 +415,7 @@ class YouTubeVideoList(Resource):
                         }
 
                     video_id = get_video_id(video_link)
+                    logger.info(f"Extracted video_id: '{video_id}' from URL: {video_link}")
                     if not video_id:
                         logger.warning(f"Invalid YouTube URL: {video_link}")
                         return {
@@ -431,11 +456,14 @@ class YouTubeVideoList(Resource):
                     transcript = None
                     transcript_source = "uploaded_srt"
                     try:
-                        filename = secure_filename(f"{video_id}.srt")
+                        filename = f"{video_id}.srt"
                         file_path = os.path.join(uploads_dir, filename)
-                        file_mapping[video_id].save(file_path)
-                        logger.info(f"File saved successfully: {file_path}")
-                        transcript = parse_srt_file(file_path)
+                        
+                        # Use thread lock for file operations to prevent conflicts
+                        with file_operation_lock:
+                            file_mapping[video_id].save(file_path)
+                            logger.info(f"File saved successfully: {file_path}")
+                            transcript = parse_srt_file(file_path)
                         if transcript:
                             logger.info(f"Successfully parsed uploaded SRT file for video {video_id}")
                         else:
@@ -452,7 +480,7 @@ class YouTubeVideoList(Resource):
                             "success": False,
                             "message": f"Error processing SRT file for video {video_id}: {str(e)}"
                         }
-                    # Save video info to Redis
+                    # Save video info to Redis with retry mechanism
                     video_info = {
                         "link": video_link,
                         "video_id": video_id,
@@ -462,17 +490,36 @@ class YouTubeVideoList(Resource):
                         "transcript_source": transcript_source,
                         "created_at": int(datetime.now().timestamp() * 1000)
                     }
-                    redis_resource_client.hset(video_key, mapping=video_info)
                     
-                    # Update channel's video list
-                    videos_json = redis_resource_client.hget(channel_key, 'videos')
-                    try:
-                        videos_list = json.loads(videos_json) if videos_json else []
-                    except Exception:
-                        videos_list = []
-                    if video_id not in videos_list:
-                        videos_list.append(video_id)
-                        redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
+                    # Retry Redis operations up to 3 times
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            redis_resource_client.hset(video_key, mapping=video_info)
+                            
+                            # Update channel's video list
+                            videos_json = redis_resource_client.hget(channel_key, 'videos')
+                            try:
+                                videos_list = json.loads(videos_json) if videos_json else []
+                            except Exception:
+                                videos_list = []
+                            if video_id not in videos_list:
+                                videos_list.append(video_id)
+                                redis_resource_client.hset(channel_key, 'videos', json.dumps(videos_list))
+                            break  # Success, exit retry loop
+                            
+                        except Exception as redis_error:
+                            if attempt == max_retries - 1:  # Last attempt
+                                logger.error(f"Redis operation failed after {max_retries} attempts for video {video_id}: {str(redis_error)}")
+                                return {
+                                    "video_id": video_id,
+                                    "success": False,
+                                    "message": f"Database operation failed: {str(redis_error)}"
+                                }
+                            else:
+                                logger.warning(f"Redis operation attempt {attempt + 1} failed for video {video_id}: {str(redis_error)}, retrying...")
+                                import time
+                                time.sleep(1)  # Wait 1 second before retry
                     
                     success_message = f"Video {video_id} saved successfully for channel {channel_id}"
                     
@@ -501,6 +548,9 @@ class YouTubeVideoList(Resource):
             
             # Use ThreadPoolExecutor for concurrent processing
             max_workers = min(5, len(data))  # Limit to 5 concurrent threads
+            logger.info(f"Starting concurrent processing with {max_workers} workers for {len(data)} videos")
+            
+            start_time = datetime.now()
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit all tasks
@@ -509,30 +559,66 @@ class YouTubeVideoList(Resource):
                     for video_data in data
                 }
                 
-                # Collect results as they complete
-                for future in as_completed(future_to_video):
-                    try:
-                        result = future.result()
-                        results.append(result)
-                        
-                        if result.get("duplicate"):
-                            duplicate_video_ids.append(result["video_id"])
-                        elif result.get("success"):
-                            success_count += 1
-                        else:
-                            error_count += 1
+                logger.info(f"Submitted {len(future_to_video)} tasks to thread pool")
+                
+                # Collect results as they complete with timeout
+                completed_count = 0
+                timeout_seconds = 300  # 5 minutes timeout per batch
+                
+                try:
+                    for future in as_completed(future_to_video, timeout=timeout_seconds):
+                        completed_count += 1
+                        try:
+                            result = future.result(timeout=60)  # 1 minute timeout per video
+                            results.append(result)
                             
-                    except Exception as e:
-                        video_data = future_to_video[future]
-                        video_link = video_data.get('video_link', 'unknown')
-                        error_result = {
-                            "video_id": None,
-                            "success": False,
-                            "message": f"Thread execution error: {str(e)}"
-                        }
-                        results.append(error_result)
-                        error_count += 1
-                        logger.error(f"Thread execution error for video {video_link}: {str(e)}")
+                            video_id = result.get("video_id", "unknown")
+                            
+                            if result.get("duplicate"):
+                                duplicate_video_ids.append(result["video_id"])
+                                logger.info(f"[{completed_count}/{len(data)}] Duplicate video: {video_id}")
+                            elif result.get("success"):
+                                success_count += 1
+                                logger.info(f"[{completed_count}/{len(data)}] Successfully processed video: {video_id}")
+                            else:
+                                error_count += 1
+                                logger.warning(f"[{completed_count}/{len(data)}] Failed to process video: {video_id} - {result.get('message', 'Unknown error')}")
+                                
+                        except Exception as e:
+                            video_data = future_to_video[future]
+                            video_link = video_data.get('video_link', 'unknown')
+                            video_id = get_video_id(video_link) if video_link != 'unknown' else 'unknown'
+                            
+                            error_result = {
+                                "video_id": video_id,
+                                "success": False,
+                                "message": f"Thread execution error: {str(e)}"
+                            }
+                            results.append(error_result)
+                            error_count += 1
+                            logger.error(f"[{completed_count}/{len(data)}] Thread execution error for video {video_link}: {str(e)}")
+                            
+                except TimeoutError:
+                    logger.error(f"Batch processing timeout after {timeout_seconds} seconds. Completed {completed_count}/{len(data)} videos")
+                    # Cancel remaining futures
+                    for future in future_to_video:
+                        if not future.done():
+                            future.cancel()
+                            video_data = future_to_video[future]
+                            video_link = video_data.get('video_link', 'unknown')
+                            video_id = get_video_id(video_link) if video_link != 'unknown' else 'unknown'
+                            
+                            timeout_result = {
+                                "video_id": video_id,
+                                "success": False,
+                                "message": "Processing timeout - operation cancelled"
+                            }
+                            results.append(timeout_result)
+                            error_count += 1
+                            logger.warning(f"Cancelled video processing due to timeout: {video_id}")
+            
+            processing_time = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Concurrent processing completed in {processing_time:.2f} seconds. Success: {success_count}, Errors: {error_count}, Duplicates: {len(duplicate_video_ids)}")
 
             # Sort results by video_id for consistent ordering
             results.sort(key=lambda x: x.get('video_id') or '')

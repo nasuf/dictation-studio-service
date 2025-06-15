@@ -16,7 +16,14 @@ class RedisManager:
                 port=REDIS_PORT, 
                 db=REDIS_RESOURCE_DB, 
                 password=REDIS_PASSWORD,
-                decode_responses=True  # automatically decode responses
+                decode_responses=True,  # automatically decode responses
+                max_connections=20,     # Increase max connections for concurrent processing
+                socket_timeout=60,      # Increase socket timeout to 60 seconds
+                socket_connect_timeout=15,  # Increase connection timeout to 15 seconds
+                retry_on_timeout=True,  # Retry on timeout
+                health_check_interval=30,  # Health check interval
+                socket_keepalive=True,  # Enable socket keepalive
+                socket_keepalive_options={}  # Use default keepalive options
             )
         return redis.Redis(connection_pool=cls._resource_pool)
     
@@ -28,7 +35,14 @@ class RedisManager:
                 port=REDIS_PORT, 
                 db=REDIS_USER_DB, 
                 password=REDIS_PASSWORD,
-                decode_responses=True  # automatically decode responses
+                decode_responses=True,  # automatically decode responses
+                max_connections=10,     # Sufficient for user operations
+                socket_timeout=60,      # Increase socket timeout to 60 seconds
+                socket_connect_timeout=15,  # Increase connection timeout to 15 seconds
+                retry_on_timeout=True,  # Retry on timeout
+                health_check_interval=30,  # Health check interval
+                socket_keepalive=True,  # Enable socket keepalive
+                socket_keepalive_options={}  # Use default keepalive options
             )
         return redis.Redis(connection_pool=cls._user_pool)
     
@@ -40,6 +54,13 @@ class RedisManager:
                 port=REDIS_PORT, 
                 db=REDIS_BLACKLIST_DB, 
                 password=REDIS_PASSWORD,
-                decode_responses=True  # automatically decode responses
+                decode_responses=True,  # automatically decode responses
+                max_connections=5,      # Sufficient for blacklist operations
+                socket_timeout=60,      # Increase socket timeout to 60 seconds
+                socket_connect_timeout=15,  # Increase connection timeout to 15 seconds
+                retry_on_timeout=True,  # Retry on timeout
+                health_check_interval=30,  # Health check interval
+                socket_keepalive=True,  # Enable socket keepalive
+                socket_keepalive_options={}  # Use default keepalive options
             )
         return redis.Redis(connection_pool=cls._blacklist_pool)
