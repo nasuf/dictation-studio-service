@@ -81,6 +81,15 @@ feedback_message_model = user_ns.model('FeedbackMessage', {
     'email': fields.String(required=False, description='Contact email for follow-up')
 })
 
+# Add video error report model
+video_error_report_model = user_ns.model('VideoErrorReport', {
+    'channelId': fields.String(required=True, description='Channel ID'),
+    'videoId': fields.String(required=True, description='Video ID'),
+    'videoTitle': fields.String(required=True, description='Video title'),
+    'errorType': fields.String(required=True, description='Type of error (transcript_error, timing_error, missing_content, other)'),
+    'description': fields.String(required=True, description='Detailed description of the error')
+})
+
 @user_ns.route('/progress')
 class DictationProgress(Resource):
     @jwt_required()
@@ -1414,3 +1423,247 @@ class AdminSendFeedback(Resource):
         except Exception as e:
             logger.error(f"Error sending admin feedback message: {str(e)}")
             return {"error": f"An error occurred while sending feedback message: {str(e)}"}, 500
+
+@user_ns.route('/video-error-reports')
+class VideoErrorReport(Resource):
+    @jwt_required()
+    @user_ns.expect(video_error_report_model)
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    def post(self):
+        """Submit a video error report"""
+        try:
+            user_email = get_jwt_identity()
+            data = request.json
+            
+            # Validate required fields
+            required_fields = ['channelId', 'channelName', 'videoId', 'videoTitle', 'errorType', 'description']
+            if not all(field in data for field in required_fields):
+                return {"error": "Missing required fields"}, 400
+            
+            # Validate error type
+            valid_error_types = ['transcript_error', 'timing_error', 'missing_content', 'other']
+            if data['errorType'] not in valid_error_types:
+                return {"error": "Invalid error type"}, 400
+            
+            # Check if video exists
+            video_key = f"{VIDEO_PREFIX}{data['channelId']}:{data['videoId']}"
+            if not redis_resource_client.exists(video_key):
+                return {"error": "Video not found"}, 404
+            
+            # Get user information
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+            
+            if not user_data:
+                return {"error": "User not found"}, 404
+            
+            user_name = user_data.get('username', 'Unknown User')
+            
+            # Generate unique report ID
+            timestamp = int(time.time() * 1000)
+            report_id = f"VER_{timestamp}_{user_email.replace('@', '_').replace('.', '_')}"
+            
+            # Create error report
+            error_report = {
+                'id': report_id,
+                'channelId': data['channelId'],
+                'channelName': data['channelName'],
+                'videoId': data['videoId'],
+                'videoTitle': data['videoTitle'],
+                'userEmail': user_email,
+                'userName': user_name,
+                'errorType': data['errorType'],
+                'description': data['description'].strip(),
+                'status': 'pending',
+                'timestamp': timestamp
+            }
+            
+            # Get existing video error reports from user data
+            video_error_reports_json = user_data.get('video_error_reports', '[]')
+            try:
+                video_error_reports = json.loads(video_error_reports_json)
+            except json.JSONDecodeError:
+                video_error_reports = []
+            
+            # Add new report to user's reports
+            video_error_reports.append(error_report)
+            
+            # Save updated reports back to user data
+            redis_user_client.hset(user_key, 'video_error_reports', json.dumps(video_error_reports))
+            
+            logger.info(f"Video error report submitted by user: {user_email} for video: {data['videoId']}")
+            return {"message": "Video error report submitted successfully", "reportId": report_id}, 200
+            
+        except Exception as e:
+            logger.error(f"Error submitting video error report: {str(e)}")
+            return {"error": f"An error occurred while submitting video error report: {str(e)}"}, 500
+
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 500: 'Server Error'})
+    def get(self):
+        """Get user's video error reports"""
+        try:
+            user_email = get_jwt_identity()
+            channel_id = request.args.get('channelId')
+            video_id = request.args.get('videoId')
+            
+            # Get user data
+            user_key = f"{USER_PREFIX}{user_email}"
+            user_data = redis_user_client.hgetall(user_key)
+            
+            if not user_data:
+                return {"error": "User not found"}, 404
+            
+            # Get video error reports from user data
+            video_error_reports_json = user_data.get('video_error_reports', '[]')
+            try:
+                reports = json.loads(video_error_reports_json)
+            except json.JSONDecodeError:
+                reports = []
+            
+            # Filter by channel and video if specified
+            filtered_reports = []
+            for report in reports:
+                if channel_id and report.get('channelId') != channel_id:
+                    continue
+                if video_id and report.get('videoId') != video_id:
+                    continue
+                filtered_reports.append(report)
+            
+            # Sort by timestamp (newest first)
+            filtered_reports.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+            
+            logger.info(f"Retrieved {len(filtered_reports)} video error reports for user: {user_email}")
+            return filtered_reports, 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving video error reports: {str(e)}")
+            return {"error": f"An error occurred while retrieving video error reports: {str(e)}"}, 500
+
+@user_ns.route('/video-error-reports/admin')
+class AdminVideoErrorReports(Resource):
+    @jwt_required()
+    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
+    def get(self):
+        """Get all video error reports (Admin only)"""
+        try:
+            admin_email = get_jwt_identity()
+            
+            # Check if user is admin
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data:
+                return {"error": "Admin user not found"}, 404
+            
+            admin_role = admin_data.get('role', '').lower()
+            if admin_role != 'admin':
+                return {"error": "Only admin users can access all video error reports"}, 403
+            
+            # Get all user keys and collect their video error reports
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
+            all_reports = []
+            
+            for user_key in user_keys:
+                try:
+                    user_data = redis_user_client.hgetall(user_key)
+                    if 'video_error_reports' in user_data:
+                        video_error_reports_json = user_data['video_error_reports']
+                        try:
+                            user_reports = json.loads(video_error_reports_json)
+                            all_reports.extend(user_reports)
+                        except json.JSONDecodeError:
+                            continue
+                except Exception as e:
+                    logger.error(f"Error processing user reports from {user_key}: {str(e)}")
+                    continue
+            
+            # Sort by timestamp (newest first)
+            all_reports.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+            
+            logger.info(f"Admin {admin_email} retrieved {len(all_reports)} video error reports")
+            return all_reports, 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving all video error reports: {str(e)}")
+            return {"error": f"An error occurred while retrieving all video error reports: {str(e)}"}, 500
+
+@user_ns.route('/video-error-reports/<string:report_id>')
+class VideoErrorReportUpdate(Resource):
+    @jwt_required()
+    @user_ns.expect(user_ns.model('VideoErrorReportUpdate', {
+        'status': fields.String(required=True, description='New status (pending, resolved, rejected)'),
+        'adminResponse': fields.String(required=False, description='Admin response message')
+    }))
+    @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
+    def put(self, report_id):
+        """Update video error report status (Admin only)"""
+        try:
+            admin_email = get_jwt_identity()
+            data = request.json
+            
+            # Check if user is admin
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data:
+                return {"error": "Admin user not found"}, 404
+            
+            admin_role = admin_data.get('role', '').lower()
+            if admin_role != 'admin':
+                return {"error": "Only admin users can update video error reports"}, 403
+            
+            # Validate status
+            valid_statuses = ['pending', 'resolved', 'rejected']
+            new_status = data.get('status')
+            if new_status not in valid_statuses:
+                return {"error": "Invalid status"}, 400
+            
+            # Find the report in all users' data
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
+            report_found = False
+            
+            for user_key in user_keys:
+                try:
+                    user_data = redis_user_client.hgetall(user_key)
+                    if 'video_error_reports' in user_data:
+                        video_error_reports_json = user_data['video_error_reports']
+                        try:
+                            user_reports = json.loads(video_error_reports_json)
+                            
+                            # Find and update the specific report
+                            for i, report in enumerate(user_reports):
+                                if report.get('id') == report_id:
+                                    # Update the report
+                                    current_timestamp = int(time.time() * 1000)
+                                    user_reports[i]['status'] = new_status
+                                    
+                                    if new_status in ['resolved', 'rejected']:
+                                        user_reports[i]['resolvedAt'] = current_timestamp
+                                    
+                                    if data.get('adminResponse'):
+                                        user_reports[i]['adminResponse'] = data['adminResponse']
+                                    
+                                    # Save updated reports back to user data
+                                    redis_user_client.hset(user_key, 'video_error_reports', json.dumps(user_reports))
+                                    report_found = True
+                                    break
+                            
+                            if report_found:
+                                break
+                                
+                        except json.JSONDecodeError:
+                            continue
+                except Exception as e:
+                    logger.error(f"Error processing user reports from {user_key}: {str(e)}")
+                    continue
+            
+            if not report_found:
+                return {"error": "Video error report not found"}, 404
+            
+            logger.info(f"Admin {admin_email} updated video error report {report_id} to status: {new_status}")
+            return {"message": f"Video error report updated successfully to {new_status}"}, 200
+            
+        except Exception as e:
+            logger.error(f"Error updating video error report: {str(e)}")
+            return {"error": f"An error occurred while updating video error report: {str(e)}"}, 500
