@@ -96,14 +96,18 @@ class UserInfo(Resource):
                 'email': data['email'],
                 'avatar': data['avatar'],
                 'username': data['username'],
-                'plan': USER_PLAN_DEFAULT,
+                'plan': json.loads(USER_PLAN_DEFAULT),  # Parse JSON string to object
                 'role': USER_ROLE_DEFAULT,
-                'dictation_config': USER_DICTATION_CONFIG_DEFAULT,
+                'dictation_config': json.loads(USER_DICTATION_CONFIG_DEFAULT),  # Parse JSON string to object
                 'language': USER_LANGUAGE_DEFAULT,
                 'updated_at': int(datetime.now().timestamp() * 1000),
                 'created_at': int(datetime.now().timestamp() * 1000)
             }
-            redis_user_client.hmset(user_key, user_info)
+            # For Redis storage, we need to convert JSON objects back to strings
+            redis_data = user_info.copy()
+            redis_data['plan'] = USER_PLAN_DEFAULT  # Store as JSON string in Redis
+            redis_data['dictation_config'] = USER_DICTATION_CONFIG_DEFAULT  # Store as JSON string in Redis
+            redis_user_client.hmset(user_key, redis_data)
 
         # Create a new JWT token for the user
         access_token = create_access_token(identity=data['email'], expires_delta=JWT_ACCESS_TOKEN_EXPIRES)
