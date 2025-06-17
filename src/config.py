@@ -21,8 +21,8 @@ JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-secret-key')
 JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=120)
 JWT_REFRESH_TOKEN_EXPIRES = False
 
-# default expiry time is 30 days
-USER_PLAN_DEFAULT = json.dumps({"name": "Basic", "expireTime": int(datetime.now().timestamp() * 1000) + 30 * 24 * 60 * 60 * 1000, "isRecurring": False, "status": "active",}) 
+# default expiry time is 100 years
+USER_PLAN_DEFAULT = json.dumps({"name": "Premium", "expireTime": int(datetime.now().timestamp() * 1000) + 365 * 100 * 24 * 60 * 60 * 1000, "isRecurring": False, "status": "active",}) 
 USER_ROLE_DEFAULT = "User"
 USER_DICTATION_CONFIG_DEFAULT = json.dumps({"playback_speed": 1, "auto_repeat": 0, "shortcuts": {"repeat": "Tab", "next": "Enter", "prev": "ControlLeft"}})
 USER_LANGUAGE_DEFAULT = "en"
