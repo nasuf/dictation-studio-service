@@ -224,10 +224,20 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
     # 如果有当前计划且未过期，累加时长
     if current_plan and current_plan.get('expireTime'):
         try:
-            current_expire_time = datetime.strptime(current_plan['expireTime'], '%Y-%m-%d %H:%M:%S')
+            expire_time_value = current_plan['expireTime']
+            
+            # Handle only millisecond timestamp format
+            if isinstance(expire_time_value, (int, float)):
+                current_expire_timestamp_ms = int(expire_time_value)
+                current_expire_time = datetime.fromtimestamp(current_expire_timestamp_ms / 1000)
+            else:
+                raise ValueError(f"Invalid expireTime format: expected int/float, got {type(expire_time_value)}")
+                
             # 如果当前计划未过期，从当前过期时间开始累加
             if current_expire_time > now:
                 new_expire_time = current_expire_time + timedelta(days=duration)
+            else:
+                new_expire_time = now + timedelta(days=duration)
             
             # 确定最终的计划名称（保留较高级别的计划）
             current_plan_name = current_plan.get('name', 'Free')
@@ -241,17 +251,18 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
             
             plan_data = {
                 "name": final_plan_name,
-                "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if not isRecurring else None,
-                "nextPaymentTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if isRecurring else None,
+                "expireTime": int(new_expire_time.timestamp() * 1000) if not isRecurring else None,
+                "nextPaymentTime": int(new_expire_time.timestamp() * 1000) if isRecurring else None,
                 "isRecurring": isRecurring,
                 "status": "active"
             }
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OSError) as e:
+            logger.warning(f"Error parsing current expire time for user {user_email}: {str(e)}")
             # 如果解析当前过期时间失败，使用新计算的值
             plan_data = {
                 "name": plan_name,
-                "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if not isRecurring else None,
-                "nextPaymentTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if isRecurring else None,
+                "expireTime": int(new_expire_time.timestamp() * 1000) if not isRecurring else None,
+                "nextPaymentTime": int(new_expire_time.timestamp() * 1000) if isRecurring else None,
                 "isRecurring": isRecurring,
                 "status": "active"
             }
@@ -259,8 +270,8 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
         # 如果没有当前计划，创建新的计划数据
         plan_data = {
             "name": plan_name,
-            "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if not isRecurring else None,
-            "nextPaymentTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S') if isRecurring else None,
+            "expireTime": int(new_expire_time.timestamp() * 1000) if not isRecurring else None,
+            "nextPaymentTime": int(new_expire_time.timestamp() * 1000) if isRecurring else None,
             "isRecurring": isRecurring,
             "status": "active"
         }
@@ -304,15 +315,21 @@ def is_plan_valid(user_info):
         return True
     
     # Check expiration time for non-permanent plans
-    expire_time = user_info.get("expireTime")
-    if not expire_time:
+    expire_time_value = user_info.get("expireTime")
+    if not expire_time_value:
         return False
     
     try:
-        expire_date = datetime.fromisoformat(expire_time)
-        current_time = datetime.now()
-        return expire_date > current_time
-    except (ValueError, TypeError):
+        current_timestamp_ms = int(datetime.now().timestamp() * 1000)
+        
+        # Handle only millisecond timestamp format
+        if isinstance(expire_time_value, (int, float)):
+            expire_timestamp_ms = int(expire_time_value)
+        else:
+            return False
+            
+        return expire_timestamp_ms > current_timestamp_ms
+    except (ValueError, TypeError, OSError):
         return False
 
 def init_quota(user_email):

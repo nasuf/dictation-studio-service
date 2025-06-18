@@ -162,8 +162,24 @@ class Register(Resource):
             if redis_user_client.exists(f"user:{email}"):
                 return {"error": "User with this email already exists"}, 400
 
-            # Hash the password
-            hashed_password = hash_password(password)
+            # Handle password - check if it's already encrypted from frontend
+            if ':' in password and len(password.split(':')) == 2:
+                # Password is already encrypted from frontend (salt:hash format)
+                salt_hex, hash_hex = password.split(':')
+                try:
+                    # Convert hex strings back to bytes
+                    salt = bytes.fromhex(salt_hex)
+                    hash_bytes = bytes.fromhex(hash_hex)
+                    hashed_password = salt + hash_bytes
+                    logger.info(f"Using frontend-encrypted password for user: {email}")
+                except ValueError:
+                    # If conversion fails, treat as plain text password
+                    hashed_password = hash_password(password)
+                    logger.info(f"Frontend encryption format invalid, using server-side hashing for user: {email}")
+            else:
+                # Plain text password - hash it server-side
+                hashed_password = hash_password(password)
+                logger.info(f"Using server-side password hashing for user: {email}")
 
             # Store user data in Redis
             user_data = {
@@ -374,7 +390,7 @@ class UserPlan(Resource):
 
             # Calculate expiration date if duration is provided
             if duration:
-                expire_time = (datetime.now() + timedelta(days=duration)).strftime('%Y-%m-%d %H:%M:%S')
+                expire_time = int((datetime.now() + timedelta(days=duration)).timestamp() * 1000)
             else:
                 expire_time = None
 

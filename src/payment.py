@@ -694,10 +694,20 @@ class AssignVerificationCode(Resource):
 
             if current_plan and current_plan.get('expireTime'):
                 try:
-                    current_expire_time = datetime.strptime(current_plan['expireTime'], '%Y-%m-%d %H:%M:%S')
+                    expire_time_value = current_plan['expireTime']
+                    
+                    # Handle only millisecond timestamp format
+                    if isinstance(expire_time_value, (int, float)):
+                        current_expire_timestamp_ms = int(expire_time_value)
+                        current_expire_time = datetime.fromtimestamp(current_expire_timestamp_ms / 1000)
+                    else:
+                        raise ValueError(f"Invalid expireTime format: expected int/float, got {type(expire_time_value)}")
+                        
                     # 如果当前计划未过期，从当前过期时间开始累加
                     if current_expire_time > now:
                         new_expire_time = current_expire_time + timedelta(days=days_duration)
+                    else:
+                        new_expire_time = now + timedelta(days=days_duration)
                         
                     # 确定最终的计划名称（保留较高级别的计划）
                     current_plan_name = current_plan.get('name', 'Free')
@@ -709,15 +719,16 @@ class AssignVerificationCode(Resource):
                     # 更新计划数据
                     plan_data = {
                         "name": final_plan_name,
-                        "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "expireTime": int(new_expire_time.timestamp() * 1000),
                         "isRecurring": False,
                         "status": "active"
                     }
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OSError) as e:
+                    logger.warning(f"Error parsing current expire time for user {user_email}: {str(e)}")
                     # 如果解析当前过期时间失败，使用新计算的值
                     plan_data = {
                         "name": new_plan_name,
-                        "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "expireTime": int(new_expire_time.timestamp() * 1000),
                         "isRecurring": False,
                         "status": "active"
                     }
@@ -725,7 +736,7 @@ class AssignVerificationCode(Resource):
                 # 如果没有当前计划，创建新的计划数据
                 plan_data = {
                     "name": new_plan_name,
-                    "expireTime": new_expire_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "expireTime": int(new_expire_time.timestamp() * 1000),
                     "isRecurring": False,
                     "status": "active"
                 }
@@ -751,6 +762,7 @@ def check_expired_plans():
     """Check and update expired user plans"""
     try:
         current_time = datetime.now()
+        current_timestamp_ms = int(current_time.timestamp() * 1000)
         
         # fetch all users
         for key in redis_user_client.scan_iter(match=f"{USER_PREFIX}*"):
@@ -760,17 +772,28 @@ def check_expired_plans():
                 plan_data = json.loads(user_data['plan'])
                 
                 # check if there is an expire time
-                expire_time_str = plan_data.get('expireTime')
-                if not expire_time_str or not isinstance(expire_time_str, str):
+                expire_time_value = plan_data.get('expireTime')
+                if not expire_time_value:
                     continue
-                expire_time = datetime.fromisoformat(expire_time_str)
                 
-                # if it is a permanent member, skip
-                if expire_time == datetime.max:
+                # Handle only millisecond timestamp format
+                try:
+                    if isinstance(expire_time_value, (int, float)):
+                        expire_timestamp_ms = int(expire_time_value)
+                    else:
+                        logger.warning(f"Invalid expireTime format for user {key}: expected int/float, got {type(expire_time_value)}")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error parsing expire time for user {key}: {str(e)}")
+                    continue
+                
+                # if it is a permanent member (100+ years in future), skip
+                permanent_threshold_ms = current_timestamp_ms + (365 * 50 * 24 * 60 * 60 * 1000)
+                if expire_timestamp_ms > permanent_threshold_ms:
                     continue
                 
                 # check if it is expired
-                if current_time > expire_time:
+                if current_timestamp_ms > expire_timestamp_ms:
                     # if it is a recurring payment and not cancelled, do not change the status
                     if plan_data.get('isRecurring') == 'true' and 'cancelAt' not in plan_data:
                         continue
