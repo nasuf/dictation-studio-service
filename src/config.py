@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Redis Configuration
 REDIS_HOST = os.getenv('REDIS_HOST')
@@ -21,10 +21,10 @@ JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-secret-key')
 JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=120)
 JWT_REFRESH_TOKEN_EXPIRES = False
 
-# default expiry time is 100 years
+# default expiry time is 100 years (UTC milliseconds)
 USER_PLAN_DEFAULT = json.dumps({
     "name": "Premium", 
-    "expireTime": int((datetime.now() + timedelta(days=365 * 100)).timestamp() * 1000), 
+    "expireTime": int((datetime.now(timezone.utc) + timedelta(days=365 * 100)).timestamp() * 1000), 
     "isRecurring": False, 
     "status": "active"
 })

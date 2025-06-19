@@ -7,7 +7,7 @@ import logging
 import requests
 import secrets
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from config import (
     USER_PREFIX,
     PAYMENT_MAX_RETRY_ATTEMPTS,
@@ -220,7 +220,7 @@ class CreateZPayOrder(Resource):
                 'amount': amount,
                 'pay_type': pay_type,
                 'status': ORDER_STATUS_PENDING,
-                'created_at': datetime.now().isoformat(),
+                'created_at': int(datetime.now(timezone.utc).timestamp() * 1000),
                 'payment_url': payment_url,
                 'metadata': {
                     'zpay_params': zpay_params,
@@ -349,7 +349,7 @@ def process_zpay_payment_idempotent(order_id: str, trade_no: str, callback_data:
         # Update order status BEFORE updating user plan
         order_data['status'] = ORDER_STATUS_PAID
         order_data['trade_no'] = trade_no
-        order_data['paid_at'] = datetime.now().isoformat()
+        order_data['paid_at'] = int(datetime.now(timezone.utc).timestamp() * 1000)
         order_data['callback_data'] = callback_data
         
         store_zpay_order_data(order_id, order_data)
@@ -416,7 +416,7 @@ class ZPayOrderStatus(Resource):
                     # Update local status
                     order_data['status'] = ORDER_STATUS_PAID
                     order_data['trade_no'] = zpay_status.get('trade_no')
-                    order_data['paid_at'] = datetime.now().isoformat()
+                    order_data['paid_at'] = int(datetime.now(timezone.utc).timestamp() * 1000)
                     store_zpay_order_data(order_id, order_data)
                     
                     # Update user plan
@@ -579,8 +579,8 @@ def store_failed_zpay_update(order_id: str, order_data: dict, error: str, retry_
             'duration': order_data['duration'],
             'error': str(error),
             'retry_count': retry_count,
-            'timestamp': datetime.now().isoformat(),
-            'next_retry': (datetime.now() + timedelta(seconds=PAYMENT_RETRY_DELAY_SECONDS)).isoformat()
+            'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+            'next_retry': int((datetime.now(timezone.utc) + timedelta(seconds=PAYMENT_RETRY_DELAY_SECONDS)).timestamp() * 1000)
         }
         
         key = f"failed_zpay_update:{order_id}"

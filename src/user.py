@@ -4,7 +4,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 import json
 import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 from utils import get_plan_name_by_duration, init_quota, update_user_plan, check_dictation_quota, register_dictation_video
 import base64
@@ -145,11 +145,14 @@ class DictationProgress(Resource):
                 duration_data['channels'][channel_id]['videos'][video_id] = 0
             duration_data['channels'][channel_id]['videos'][video_id] += duration_increment
 
-            # Update daily duration
-            today = datetime.now().strftime('%Y-%m-%d')
-            if today not in duration_data['date']:
-                duration_data['date'][today] = 0
-            duration_data['date'][today] += duration_increment
+            # Update daily duration using epoch milliseconds for start of day in UTC
+            now_utc = datetime.now(timezone.utc)
+            today_start_utc = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+            today_timestamp = str(int(today_start_utc.timestamp() * 1000))
+            
+            if today_timestamp not in duration_data['date']:
+                duration_data['date'][today_timestamp] = 0
+            duration_data['date'][today_timestamp] += duration_increment
 
             redis_user_client.hset(user_key, 'duration_data', json.dumps(duration_data))
 
@@ -159,7 +162,7 @@ class DictationProgress(Resource):
                 "videoDuration": duration_data['channels'][channel_id]['videos'][video_id],
                 "channelTotalDuration": duration_data['channels'][channel_id]['duration'],
                 "totalDuration": duration_data['duration'],
-                "dailyDuration": duration_data['date'][today]
+                "dailyDuration": duration_data['date'][today_timestamp]
             }, 200
 
         except Exception as e:
@@ -972,7 +975,7 @@ class ChannelRecommendations(Resource):
                 'id': f"REC_{str(int(time.time()*1000))}",
                 'name': recommendation_data['name'],
                 'link': recommendation_data['link'],
-                'submittedAt': datetime.now().isoformat(),
+                'submittedAt': int(datetime.now(timezone.utc).timestamp() * 1000),
                 'status': 'pending',
                 'language': recommendation_data['language']
             }

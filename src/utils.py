@@ -5,7 +5,7 @@ import logging
 import re
 import requests
 from functools import wraps
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from redis_manager import RedisManager
 from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, USER_PREFIX
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -218,7 +218,7 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
             current_plan = None
 
     # 计算新的过期时间
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     new_expire_time = now + timedelta(days=duration)
 
     # 如果有当前计划且未过期，累加时长
@@ -286,7 +286,7 @@ def update_user_plan(user_email, plan_name, duration, isRecurring=False, from_or
 
     # 创建更新记录
     update_record = {
-        'time': now.isoformat(),
+        'time': int(datetime.now(timezone.utc).timestamp() * 1000),
         'days_added': duration
     }
 
@@ -320,7 +320,7 @@ def is_plan_valid(user_info):
         return False
     
     try:
-        current_timestamp_ms = int(datetime.now().timestamp() * 1000)
+        current_timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         
         # Handle only millisecond timestamp format
         if isinstance(expire_time_value, (int, float)):
@@ -338,8 +338,8 @@ def init_quota(user_email):
     if not user_data:
         return {"error": "User not found"}, 404
     quota = {
-        "init_time": datetime.now().isoformat(),
-        "cycle_init_time": datetime.now().isoformat(),
+        "init_time": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "cycle_init_time": int(datetime.now(timezone.utc).timestamp() * 1000),
         "videos": [],
         "history": []
     }
@@ -392,13 +392,18 @@ def check_dictation_quota(user_id, channel_id, video_id):
         quota_info = init_quota(user_id)
         # Init quota in redis
         redis_user_client.hset(user_key, "quota", json.dumps(quota_info))
+        # Calculate end date for display (30 days after cycle start)
+        cycle_start_ms = quota_info["cycle_init_time"]
+        cycle_start_date = datetime.fromtimestamp(cycle_start_ms / 1000, tz=timezone.utc)
+        end_date = cycle_start_date + timedelta(days=30)
+        
         return {
             "used": 0,
             "limit": 4,
             "canProceed": True,
             "notifyQuota": True,
-            "startDate": quota_info["cycle_init_time"].strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d")
+            "startDate": int(cycle_start_date.timestamp() * 1000),
+            "endDate": int(end_date.timestamp() * 1000)
         }
     
     # Check if current video is already in history
@@ -406,12 +411,14 @@ def check_dictation_quota(user_id, channel_id, video_id):
     
     # Get first use time
     try:
-        cycle_init_time = datetime.fromisoformat(quota_info["cycle_init_time"])
-    except (ValueError, KeyError):
-        cycle_init_time = datetime.now()
-        quota_info["cycle_init_time"] = cycle_init_time.isoformat()
+        cycle_init_timestamp = quota_info["cycle_init_time"]
+        cycle_init_time = datetime.fromtimestamp(cycle_init_timestamp / 1000, tz=timezone.utc)
+    except (ValueError, KeyError, TypeError):
+        cycle_init_time = datetime.now(timezone.utc)
+        cycle_init_timestamp = int(cycle_init_time.timestamp() * 1000)
+        quota_info["cycle_init_time"] = cycle_init_timestamp
     
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
     # Calculate end date of 30-day period
     end_date = cycle_init_time + timedelta(days=30)
@@ -424,7 +431,7 @@ def check_dictation_quota(user_id, channel_id, video_id):
         
         # Update first use time to start of most recent cycle
         cycle_init_time = cycle_init_time + timedelta(days=cycles * 30)
-        quota_info["cycle_init_time"] = cycle_init_time.isoformat()
+        quota_info["cycle_init_time"] = int(cycle_init_time.timestamp() * 1000)
         
         # Update end date
         end_date = cycle_init_time + timedelta(days=30)
@@ -446,8 +453,8 @@ def check_dictation_quota(user_id, channel_id, video_id):
             "limit": 4,
             "canProceed": True,
             "notifyQuota": False,
-            "startDate": cycle_init_time.strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d")
+            "startDate": int(cycle_init_time.timestamp() * 1000),
+            "endDate": int(end_date.timestamp() * 1000)
         }
     
     # If not reached limit, can proceed
@@ -457,8 +464,8 @@ def check_dictation_quota(user_id, channel_id, video_id):
             "limit": 4,
             "canProceed": True,
             "notifyQuota": True,
-            "startDate": cycle_init_time.strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d")
+            "startDate": int(cycle_init_time.timestamp() * 1000),
+            "endDate": int(end_date.timestamp() * 1000)
         }
     else:
         return {
@@ -466,8 +473,8 @@ def check_dictation_quota(user_id, channel_id, video_id):
             "limit": 4,
             "canProceed": False,
             "notifyQuota": True,
-            "startDate": cycle_init_time.strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d")
+            "startDate": int(cycle_init_time.timestamp() * 1000),
+            "endDate": int(end_date.timestamp() * 1000)
         }
 
 def register_dictation_video(user_id, channel_id, video_id):
@@ -512,7 +519,7 @@ def register_dictation_video(user_id, channel_id, video_id):
     # If no quota information, initialize
     if not quota_info:
         quota_info = {
-            "cycle_init_time": datetime.now().isoformat(),
+            "cycle_init_time": int(datetime.now(timezone.utc).timestamp() * 1000),
             "videos": [],
             "history": []
         }
@@ -523,12 +530,14 @@ def register_dictation_video(user_id, channel_id, video_id):
     
     # Get first use time
     try:
-        cycle_init_time = datetime.fromisoformat(quota_info["cycle_init_time"])
-    except (ValueError, KeyError):
-        cycle_init_time = datetime.now()
-        quota_info["cycle_init_time"] = cycle_init_time.isoformat()
+        cycle_init_timestamp = quota_info["cycle_init_time"]
+        cycle_init_time = datetime.fromtimestamp(cycle_init_timestamp / 1000, tz=timezone.utc)
+    except (ValueError, KeyError, TypeError):
+        cycle_init_time = datetime.now(timezone.utc)
+        cycle_init_timestamp = int(cycle_init_time.timestamp() * 1000)
+        quota_info["cycle_init_time"] = cycle_init_timestamp
     
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
     # Calculate end date of 30-day period
     end_date = cycle_init_time + timedelta(days=30)
@@ -541,7 +550,7 @@ def register_dictation_video(user_id, channel_id, video_id):
         
         # Update first use time to start of most recent cycle
         cycle_init_time = cycle_init_time + timedelta(days=cycles * 30)
-        quota_info["cycle_init_time"] = cycle_init_time.isoformat()
+        quota_info["cycle_init_time"] = int(cycle_init_time.timestamp() * 1000)
         
         # Clear quota records for current cycle (keep history records)
         quota_info["videos"] = []

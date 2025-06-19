@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import sys
 import os
 import json
@@ -177,7 +177,7 @@ def update_video_transcript(channel_id, video_id, new_transcript):
             redis_resource_client.hset(video_key, 'original_transcript', json.dumps(original_transcript))   
 
         # update updated_at
-        redis_resource_client.hset(video_key, 'updated_at', int(datetime.now().timestamp() * 1000))
+        redis_resource_client.hset(video_key, 'updated_at', int(datetime.now(timezone.utc).timestamp() * 1000))
         redis_resource_client.hset(video_key, 'transcript', json.dumps(new_transcript))
         
         logger.info(f"Updated transcript for video {video_id} in channel {channel_id}")
@@ -488,7 +488,7 @@ class YouTubeVideoList(Resource):
                         "visibility": visibility,
                         "transcript": json.dumps(transcript),
                         "transcript_source": transcript_source,
-                        "created_at": int(datetime.now().timestamp() * 1000)
+                        "created_at": int(datetime.now(timezone.utc).timestamp() * 1000)
                     }
                     
                     # Retry Redis operations up to 3 times
@@ -950,7 +950,7 @@ class YouTubeVideoUpdate(Resource):
             video_info['title'] = data['title']
         if 'visibility' in data and data['visibility'] is not None:
             video_info['visibility'] = data['visibility']
-        video_info['updated_at'] = int(datetime.now().timestamp() * 1000)
+        video_info['updated_at'] = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         # Save to Redis, do not touch any other fields (e.g., transcript, original_transcript)
         video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
@@ -1161,7 +1161,7 @@ def update_video_visibility(channel_id, video_id, visibility):
 
         # Update visibility and timestamp
         video_info['visibility'] = visibility
-        video_info['updated_at'] = int(datetime.now().timestamp() * 1000)
+        video_info['updated_at'] = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         # Save to Redis
         redis_resource_client.hmset(video_key, video_info)
@@ -1298,7 +1298,7 @@ def process_single_video_filter_application(channel_id, video_id, filters):
         
         # Update transcript in Redis
         redis_resource_client.hset(video_key, 'transcript', json.dumps(filtered_transcript))
-        redis_resource_client.hset(video_key, 'updated_at', int(datetime.now().timestamp() * 1000))
+        redis_resource_client.hset(video_key, 'updated_at', int(datetime.now(timezone.utc).timestamp() * 1000))
         
         # Calculate total changes made
         total_changes = sum(filter_stats.values())

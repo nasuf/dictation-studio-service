@@ -4,7 +4,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 import stripe
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from config import (
     PAYMENT_MAX_RETRY_ATTEMPTS,
     PAYMENT_RETRY_DELAY_SECONDS,
@@ -316,7 +316,7 @@ class CancelSubscription(Resource):
 
             # Update plan data in Redis to reflect cancellation
             # expireTime should be set to original nextPaymentTime, and remove nextPaymentTime
-            plan_data['cancelledAt'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            plan_data['cancelledAt'] = int(datetime.now(timezone.utc).timestamp() * 1000)
             plan_data['status'] = 'cancelled'
             plan_data['expireTime'] = plan_data['nextPaymentTime']
             plan_data.pop('nextPaymentTime', None)
@@ -345,8 +345,8 @@ def store_failed_update(session_id, user_email, plan_data, error, retry_count=0)
             'plan_data': plan_data,
             'error': str(error),
             'retry_count': retry_count,
-            'timestamp': datetime.now().isoformat(),
-            'next_retry': (datetime.now() + timedelta(seconds=PAYMENT_RETRY_DELAY_SECONDS)).isoformat()
+            'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+            'next_retry': int((datetime.now(timezone.utc) + timedelta(seconds=PAYMENT_RETRY_DELAY_SECONDS)).timestamp() * 1000)
         }
         
         # use session_id as key to store failed records
@@ -442,7 +442,7 @@ class GenerateVerificationCode(Resource):
             random_part = secrets.token_hex(8)
             
             # 创建包含时间戳和会员时长的数据
-            timestamp = datetime.now().timestamp()
+            timestamp = datetime.now(timezone.utc).timestamp()
             code_data = {
                 'timestamp': timestamp,
                 'duration': duration,
@@ -590,8 +590,8 @@ class VerificationCodes(Resource):
                             'full_code': full_code,  # 添加完整校验码
                             'duration': duration,
                             'days': code_info.get('days'),
-                            'created_at': created_time.isoformat(),
-                            'expires_at': expires_at.isoformat(),
+                            'created_at': int(created_time.timestamp() * 1000),
+                            'expires_at': int(expires_at.timestamp() * 1000),
                             'remaining_seconds': int(remaining_seconds)
                         })
             
@@ -858,7 +858,7 @@ class GenerateCustomVerificationCode(Resource):
             random_part = secrets.token_hex(8)
             
             # 创建包含时间戳和会员时长的数据
-            timestamp = datetime.now().timestamp()
+            timestamp = datetime.now(timezone.utc).timestamp()
             duration = f"custom_{days}days"
             code_data = {
                 'timestamp': timestamp,
