@@ -1618,7 +1618,12 @@ class UserUsageStats(Resource):
             
             # Calculate date range in UTC milliseconds
             now_utc = datetime.now(timezone.utc)
-            start_date = now_utc - timedelta(days=days)
+            # Fix: Calculate correct date range - from today going back (days-1) days
+            # This ensures we get exactly the requested number of days
+            end_date_for_range = now_utc.date()
+            start_date_for_range = end_date_for_range - timedelta(days=days-1)
+            # Convert back to datetime for comparison
+            start_date = datetime.combine(start_date_for_range, datetime.min.time()).replace(tzinfo=timezone.utc)
             
             # Get all user keys
             user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
@@ -1688,8 +1693,9 @@ class UserUsageStats(Resource):
                     continue
             
             # Fill in missing dates with zero values
-            current_date = start_date.date()
-            end_date = now_utc.date()
+            # Use the corrected date range
+            current_date = start_date_for_range
+            end_date = end_date_for_range
             
             while current_date <= end_date:
                 date_key = current_date.strftime('%Y-%m-%d')
