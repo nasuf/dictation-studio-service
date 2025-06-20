@@ -1629,12 +1629,28 @@ class UserUsageStats(Resource):
             daily_stats = {}
             total_active_users = set()
             total_duration = 0
+            daily_new_users = {}  # Track new user registrations by date
             
-            # Process each user's duration data
+            # Process each user's duration data and registration date
             for user_key in user_keys:
                 try:
                     user_data = redis_user_client.hgetall(user_key)
                     user_email = user_key.replace(USER_PREFIX, '')
+                    
+                    # Process user registration date
+                    if 'created_at' in user_data:
+                        try:
+                            created_timestamp = int(user_data['created_at'])
+                            created_dt = datetime.fromtimestamp(created_timestamp / 1000, tz=timezone.utc)
+                            
+                            # Check if user was created within our date range
+                            if start_date <= created_dt <= now_utc:
+                                date_key = created_dt.strftime('%Y-%m-%d')
+                                if date_key not in daily_new_users:
+                                    daily_new_users[date_key] = 0
+                                daily_new_users[date_key] += 1
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Error processing created_at timestamp for {user_email}: {str(e)}")
                     
                     if 'duration_data' in user_data:
                         duration_data = json.loads(user_data['duration_data'])
@@ -1690,6 +1706,7 @@ class UserUsageStats(Resource):
             # Convert sets to counts and sort by date
             daily_active_users = []
             daily_duration = []
+            daily_registrations = []
             
             for date_key in sorted(daily_stats.keys()):
                 stats = daily_stats[date_key]
@@ -1703,19 +1720,27 @@ class UserUsageStats(Resource):
                     'date': date_key,
                     'duration': stats['totalDuration']
                 })
+                
+                daily_registrations.append({
+                    'date': date_key,
+                    'newUsers': daily_new_users.get(date_key, 0)
+                })
             
             # Calculate summary statistics
             avg_daily_duration = total_duration / days if days > 0 else 0
+            total_new_users = sum(daily_new_users.values())
             
             result = {
                 'summary': {
                     'totalActiveUsers': len(total_active_users),
                     'totalDuration': total_duration,
                     'avgDailyDuration': avg_daily_duration,
+                    'totalNewUsers': total_new_users,
                     'period': f'Last {days} days'
                 },
                 'dailyActiveUsers': daily_active_users,
-                'dailyDuration': daily_duration
+                'dailyDuration': daily_duration,
+                'dailyNewUsers': daily_registrations
             }
             
             logger.info(f"Admin {admin_email} retrieved usage statistics for {days} days")
