@@ -4,7 +4,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 import json
 import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 from utils import get_plan_name_by_duration, init_quota, update_user_plan, check_dictation_quota, register_dictation_video
 import base64
@@ -28,7 +28,7 @@ dictation_progress_model = user_ns.model('DictationProgress', {
     'userInput': fields.Raw(required=True, description='User input for dictation'),
     'currentTime': fields.Integer(required=True, description='Current timestamp'),
     'overallCompletion': fields.Integer(required=True, description='Overall completion percentage'),
-    'duration': fields.Integer(required=True, description='Duration in milliseconds')
+    'duration': fields.Integer(required=True, description='Duration in seconds')
 })
 
 # Add channel recommendation model
@@ -52,7 +52,7 @@ channel_recommendation_response_model = user_ns.model('ChannelRecommendationResp
 video_duration_model = user_ns.model('VideoDuration', {
     'channelId': fields.String(required=True, description='Channel ID'),
     'videoId': fields.String(required=True, description='Video ID'),
-    'duration': fields.Integer(required=True, description='Duration in milliseconds')
+    'duration': fields.Integer(required=True, description='Duration in seconds')
 })
 
 # Add new model definition for user configuration
@@ -1590,6 +1590,140 @@ class AdminVideoErrorReports(Resource):
         except Exception as e:
             logger.error(f"Error retrieving all video error reports: {str(e)}")
             return {"error": f"An error occurred while retrieving all video error reports: {str(e)}"}, 500
+
+@user_ns.route('/usage-stats')
+class UserUsageStats(Resource):
+    @jwt_required()
+    @user_ns.doc(params={'days': 'Number of days to get statistics for (7, 30, or 60)'}, 
+                 responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
+    def get(self):
+        """Get user usage statistics for the specified number of days (Admin only)"""
+        try:
+            # Get admin identity
+            admin_email = get_jwt_identity()
+            
+            # Check if user is admin
+            admin_key = f"{USER_PREFIX}{admin_email}"
+            admin_data = redis_user_client.hgetall(admin_key)
+            
+            if not admin_data:
+                return {"error": "Admin user not found"}, 404
+            
+            admin_role = admin_data.get('role', '').lower()
+            if admin_role != 'admin':
+                return {"error": "Only admin users can access usage statistics"}, 403
+            
+            # Get days parameter
+            days = request.args.get('days', 7, type=int)
+            if days not in [7, 30, 60]:
+                return {"error": "Invalid days parameter. Must be 7, 30, or 60"}, 400
+            
+            # Calculate date range in UTC milliseconds
+            now_utc = datetime.now(timezone.utc)
+            start_date = now_utc - timedelta(days=days)
+            
+            # Get all user keys
+            user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
+            
+            # Initialize daily stats
+            daily_stats = {}
+            total_active_users = set()
+            total_duration = 0
+            
+            # Process each user's duration data
+            for user_key in user_keys:
+                try:
+                    user_data = redis_user_client.hgetall(user_key)
+                    user_email = user_key.replace(USER_PREFIX, '')
+                    
+                    if 'duration_data' in user_data:
+                        duration_data = json.loads(user_data['duration_data'])
+                        date_data = duration_data.get('date', {})
+                        
+                        # Process each date entry
+                        for date_timestamp_str, duration in date_data.items():
+                            try:
+                                # Convert timestamp string to datetime
+                                date_timestamp = int(date_timestamp_str)
+                                date_dt = datetime.fromtimestamp(date_timestamp / 1000, tz=timezone.utc)
+                                
+                                # Check if date is within our range
+                                if start_date <= date_dt <= now_utc:
+                                    date_key = date_dt.strftime('%Y-%m-%d')
+                                    
+                                    if date_key not in daily_stats:
+                                        daily_stats[date_key] = {
+                                            'date': date_key,
+                                            'activeUsers': set(),
+                                            'totalDuration': 0
+                                        }
+                                    
+                                    # Add user to active users for this date if they have meaningful duration
+                                    if duration > 0:
+                                        daily_stats[date_key]['activeUsers'].add(user_email)
+                                        daily_stats[date_key]['totalDuration'] += duration
+                                        total_active_users.add(user_email)
+                                        total_duration += duration
+                                        
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Error processing date timestamp {date_timestamp_str}: {str(e)}")
+                                continue
+                                
+                except Exception as e:
+                    logger.error(f"Error processing user data from {user_key}: {str(e)}")
+                    continue
+            
+            # Fill in missing dates with zero values
+            current_date = start_date.date()
+            end_date = now_utc.date()
+            
+            while current_date <= end_date:
+                date_key = current_date.strftime('%Y-%m-%d')
+                if date_key not in daily_stats:
+                    daily_stats[date_key] = {
+                        'date': date_key,
+                        'activeUsers': set(),
+                        'totalDuration': 0
+                    }
+                current_date += timedelta(days=1)
+            
+            # Convert sets to counts and sort by date
+            daily_active_users = []
+            daily_duration = []
+            
+            for date_key in sorted(daily_stats.keys()):
+                stats = daily_stats[date_key]
+                
+                daily_active_users.append({
+                    'date': date_key,
+                    'activeUsers': len(stats['activeUsers'])
+                })
+                
+                daily_duration.append({
+                    'date': date_key,
+                    'duration': stats['totalDuration']
+                })
+            
+            # Calculate summary statistics
+            avg_daily_duration = total_duration / days if days > 0 else 0
+            
+            result = {
+                'summary': {
+                    'totalActiveUsers': len(total_active_users),
+                    'totalDuration': total_duration,
+                    'avgDailyDuration': avg_daily_duration,
+                    'period': f'Last {days} days'
+                },
+                'dailyActiveUsers': daily_active_users,
+                'dailyDuration': daily_duration
+            }
+            
+            logger.info(f"Admin {admin_email} retrieved usage statistics for {days} days")
+            return result, 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving usage statistics: {str(e)}")
+            return {"error": f"An error occurred while retrieving usage statistics: {str(e)}"}, 500
 
 @user_ns.route('/video-error-reports/<string:report_id>')
 class VideoErrorReportUpdate(Resource):
