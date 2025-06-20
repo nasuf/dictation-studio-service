@@ -1594,7 +1594,7 @@ class AdminVideoErrorReports(Resource):
 @user_ns.route('/usage-stats')
 class UserUsageStats(Resource):
     @jwt_required()
-    @user_ns.doc(params={'days': 'Number of days to get statistics for (1, 7, 30, or 60)'}, 
+    @user_ns.doc(params={'days': 'Number of days to get statistics for (1, 7, 30, 60 or any positive integer)'}, 
                  responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
     def get(self):
         """Get user usage statistics for the specified number of days (Admin only)"""
@@ -1615,8 +1615,6 @@ class UserUsageStats(Resource):
             
             # Get days parameter
             days = request.args.get('days', 1, type=int)
-            if days not in [1, 7, 30, 60]:
-                return {"error": "Invalid days parameter. Must be 1, 7, 30, or 60"}, 400
             
             # Calculate date range in UTC milliseconds
             now_utc = datetime.now(timezone.utc)
