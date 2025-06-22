@@ -710,6 +710,10 @@ class YouTubeVideoListByChannel(Resource):
                     video_data['created_at'] = int(video_data['created_at'])
                 if 'updated_at' in video_data:
                     video_data['updated_at'] = int(video_data['updated_at'])
+                if 'is_refined' in video_data:
+                    video_data['is_refined'] = video_data.get('is_refined', 'false').lower() == 'true'
+                if 'refined_at' in video_data:
+                    video_data['refined_at'] = int(video_data['refined_at'])
                 videos.append(video_data)
 
         logger.info(f"Retrieved {len(videos)} videos for channel: {channel_id}")
@@ -1123,13 +1127,23 @@ class ChannelTranscriptSummary(Resource):
                             last_updated = int(video_data['updated_at'])
                         except Exception:
                             last_updated = None
+                    if 'is_refined' in video_data:
+                        is_refined = video_data.get('is_refined', 'false').lower() == 'true'
+                    else:
+                        is_refined = False
+                    if 'refined_at' in video_data:
+                        refined_at = int(video_data['refined_at'])
+                    else:
+                        refined_at = None
                     
                     transcript_summaries.append({
                         'video_id': video_id,
                         'title': title,
                         'transcript_count': transcript_count,
                         'has_original': has_original,
-                        'last_updated': last_updated
+                        'last_updated': last_updated,
+                        'is_refined': is_refined,
+                        'refined_at': refined_at
                     })
             
             # Sort by video_id for consistent ordering
@@ -1355,6 +1369,11 @@ batch_apply_filters_model = api.model('BatchApplyFilters', {
 # Model for single video apply filters
 single_video_apply_filters_model = api.model('SingleVideoApplyFilters', {
     'filters': fields.List(fields.String, required=True, description='List of filter strings to apply')
+})
+
+# Model for marking video as refined
+mark_video_refined_model = api.model('MarkVideoRefined', {
+    'is_refined': fields.Boolean(required=True, description='Whether the video transcript is marked as refined')
 })
 
 @ns.route('/<string:channel_id>/batch-visibility-update')
@@ -1614,6 +1633,75 @@ class BatchApplyFilters(Resource):
         except Exception as e:
             logger.error(f"Error in batch filter application: {str(e)}")
             return {"error": f"Error in batch filter application: {str(e)}"}, 500
+
+@ns.route('/<string:channel_id>/<string:video_id>/mark-refined')
+class MarkVideoRefined(Resource):
+    @jwt_required()
+    @ns.expect(mark_video_refined_model)
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def post(self, channel_id, video_id):
+        """Mark or unmark a video transcript as refined"""
+        try:
+            data = request.json
+            is_refined = data.get('is_refined', False)
+            
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(video_key)
+            
+            if not video_data:
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": f"Video {video_id} not found in channel {channel_id}"}, 404
+
+            # Update the refined status in Redis
+            redis_resource_client.hset(video_key, 'is_refined', str(is_refined).lower())
+            # If is_refined is True, set refined_at to current timestamp otherwise remove the refined_at field
+            if is_refined:
+                redis_resource_client.hset(video_key, 'refined_at', int(datetime.now(timezone.utc).timestamp() * 1000))
+            else:
+                redis_resource_client.hdel(video_key, 'refined_at')
+            # Update updated_at
+            redis_resource_client.hset(video_key, 'updated_at', int(datetime.now(timezone.utc).timestamp() * 1000))
+            
+            status_text = "refined" if is_refined else "unrefined"
+            logger.info(f"Successfully marked video {video_id} in channel {channel_id} as {status_text}")
+            
+            return {
+                "message": f"Video {video_id} marked as {status_text} successfully",
+                "channel_id": channel_id,
+                "video_id": video_id,
+                "is_refined": is_refined,
+                "refined_at": int(datetime.now(timezone.utc).timestamp() * 1000)
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error marking video {video_id} as refined: {str(e)}")
+            return {"error": f"Error marking video as refined: {str(e)}"}, 500
+
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
+    def get(self, channel_id, video_id):
+        """Get the refined status of a video"""
+        try:
+            video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
+            video_data = redis_resource_client.hgetall(video_key)
+            
+            if not video_data:
+                logger.warning(f"Video {video_id} not found in channel {channel_id}")
+                return {"error": f"Video {video_id} not found in channel {channel_id}"}, 404
+
+            is_refined = video_data.get('is_refined', 'false').lower() == 'true'
+            refined_at = video_data.get('refined_at')
+            
+            return {
+                "channel_id": channel_id,
+                "video_id": video_id,
+                "is_refined": is_refined,
+                "refined_at": int(refined_at) if refined_at else None
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting refined status for video {video_id}: {str(e)}")
+            return {"error": f"Error getting refined status: {str(e)}"}, 500
 
 # Add user namespace to API
 if __name__ == '__main__':
