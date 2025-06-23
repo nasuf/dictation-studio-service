@@ -333,11 +333,42 @@ class AllUsers(Resource):
 @user_ns.route('/all-progress')
 class AllDictationProgress(Resource):
     @jwt_required()
-    @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+    @user_ns.doc(params={'userEmail': 'Target user email (admin only, optional)'}, 
+                 responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get all dictation progress for the user with channel and video details"""
         try:
-            user_email = get_jwt_identity()
+            current_user_email = get_jwt_identity()
+            target_user_email = request.args.get('userEmail')
+            
+            # If userEmail parameter is provided, check admin permission
+            if target_user_email:
+                current_user_key = f"{USER_PREFIX}{current_user_email}"
+                current_user_data = redis_user_client.hgetall(current_user_key)
+                
+                if not current_user_data:
+                    logger.error(f"Current user data not found for: {current_user_email}")
+                    return {"error": "Admin access required"}, 403
+                
+                # Get role, handle both string and JSON formats
+                role = current_user_data.get('role', 'user')
+                try:
+                    # Try to parse as JSON if it's a JSON string
+                    role = json.loads(role)
+                except (json.JSONDecodeError, TypeError):
+                    # If not JSON, use as is
+                    pass
+                
+                logger.info(f"User {current_user_email} role: {role}")
+                
+                # Check for both 'Admin' and 'admin' for compatibility
+                if role.lower() != 'admin':
+                    return {"error": "Admin access required"}, 403
+                    
+                user_email = target_user_email
+            else:
+                user_email = current_user_email
+
             user_key = f"{USER_PREFIX}{user_email}"
             user_data = redis_user_client.hgetall(user_key)
 
@@ -349,7 +380,7 @@ class AllDictationProgress(Resource):
             all_progress = []
             for key, value in dictation_progress.items():
                 # value['userInput'] could be {}, if so then skip it
-                if not value['userInput']:
+                if not value.get('userInput'):
                     continue
                 channel_id, video_id = key.split(':')
                 
@@ -357,7 +388,7 @@ class AllDictationProgress(Resource):
                 channel_info = redis_resource_client.hgetall(channel_key)
                 if not channel_info:
                     continue
-                channel_name = channel_info['name']
+                channel_name = channel_info.get('name', channel_id)
 
                 video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
                 video_info = redis_resource_client.hgetall(video_key)
@@ -368,17 +399,21 @@ class AllDictationProgress(Resource):
                     'channelId': channel_id,
                     'channelName': channel_name,
                     'videoId': video_id,
-                    'videoTitle': video_info['title'],
-                    'videoLink': video_info['link'],
-                    'overallCompletion': value['overallCompletion']
+                    'videoTitle': video_info.get('title', 'Unknown Title'),
+                    'videoLink': video_info.get('link', ''),
+                    'overallCompletion': value.get('overallCompletion', 0)
                 })
 
-            logger.info(f"Retrieved all dictation progress for user: {user_email}")
+            if target_user_email:
+                logger.info(f"Admin {current_user_email} retrieved dictation progress for user: {user_email}")
+            else:
+                logger.info(f"Retrieved all dictation progress for user: {user_email}")
             return {"progress": all_progress}, 200
 
         except Exception as e:
             logger.error(f"Error retrieving all dictation progress: {str(e)}")
             return {"error": "An error occurred while retrieving all dictation progress"}, 500
+
 
 @user_ns.route('/duration')
 class UserDuration(Resource):
