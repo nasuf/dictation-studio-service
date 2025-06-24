@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import create_access_token, create_refresh_token, get_jwt_identity, get_jwt, jwt_required, unset_jwt_cookies
 import logging
 from config import JWT_ACCESS_TOKEN_EXPIRES, JWT_REFRESH_TOKEN_EXPIRES, USER_DICTATION_CONFIG_DEFAULT, USER_LANGUAGE_DEFAULT, USER_PLAN_DEFAULT, USER_PREFIX, USER_ROLE_DEFAULT
-from utils import add_token_to_blacklist, hash_password
+from utils import add_token_to_blacklist, hash_password, admin_required
 import json
 from datetime import datetime, timedelta, timezone
 from redis_manager import RedisManager
@@ -259,8 +259,7 @@ class Login(Resource):
                 logger.info(f"Creating new user: {email}")
             else:
                 # Existing user - preserve existing data that's not being updated
-                existing_data = {k: v 
-                               for k, v in existing_user.items()}
+                existing_data = {k: v for k, v in existing_user.items()}
                 # Preserve existing fields that are not being updated
                 for key in existing_data:
                     if key not in user_data and key != 'password':
@@ -367,18 +366,12 @@ class Users(Resource):
 @auth_ns.route('/user/plan')
 class UserPlan(Resource):
     @jwt_required()
+    @admin_required()
     @auth_ns.expect(plan_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):
         """Update user plan"""
         try:
-            current_user_email = get_jwt_identity()
-            current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
-            
-            # only allow admin to change user plan
-            if current_user_data.get('role', '') != 'Admin':
-                logger.warning(f"Non-admin user {current_user_email} attempted to change user plan")
-                return {"error": "Only 'Admin' role can change user plans"}, 403
 
             data = request.json
             emails = data.get('emails', [])
@@ -449,18 +442,12 @@ class UserPlan(Resource):
 @auth_ns.route('/user/role')
 class UserRole(Resource):
     @jwt_required()
+    @admin_required()
     @auth_ns.expect(role_update_model)
     @auth_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'User Not Found', 500: 'Server Error'})
     def put(self):
         """Update user role"""
         try:
-            current_user_email = get_jwt_identity()
-            current_user_data = redis_user_client.hgetall(f"user:{current_user_email}")
-            
-            # only allow admin to change user role
-            if current_user_data.get('role', '') != 'Admin':
-                logger.warning(f"Non-admin user {current_user_email} attempted to change user role")
-                return {"error": "Only 'Admin' role can change user roles"}, 403
 
             data = request.json
             emails = data.get('emails', [])

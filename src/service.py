@@ -15,7 +15,7 @@ from error_handlers import register_error_handlers
 from user import user_ns
 from payment import payment_ns
 from payment_zpay import payment_zpay_ns
-from utils import download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
+from utils import admin_required, download_transcript_from_youtube_transcript_api, get_video_id, parse_srt_file
 from redis_manager import RedisManager
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -190,6 +190,7 @@ def update_video_transcript(channel_id, video_id, new_transcript):
 @ns.route('/transcript')
 class YouTubeTranscript(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(youtube_url_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
@@ -213,6 +214,7 @@ class YouTubeTranscript(Resource):
 @ns.route('/channel')
 class YouTubeChannel(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(channel_info_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self):
@@ -286,6 +288,7 @@ class YouTubeChannel(Resource):
 @ns.route('/channel/<string:channel_id>')
 class YouTubeChannelOperations(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(api.model('ChannelUpdate', {
         'name': fields.String(required=False, description='Updated channel name'),
         'image_url': fields.String(required=False, description='Updated channel image URL'),
@@ -346,6 +349,7 @@ class YouTubeChannelOperations(Resource):
 @ns.route('/video-list')
 class YouTubeVideoList(Resource):
     @jwt_required()
+    @admin_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     @ns.param('data', 'JSON array of video data', type='string', required=True)
     @ns.param('transcript_files', 'Transcript files (optional)', type='file', required=False)
@@ -748,6 +752,7 @@ class VideoTranscript(Resource):
 @ns.route('/<string:channel_id>/<string:video_id>/transcript')
 class VideoTranscriptUpdate(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(transcript_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
@@ -785,6 +790,7 @@ class VideoTranscriptUpdate(Resource):
 @ns.route('/<string:channel_id>/<string:video_id>/full-transcript')
 class FullVideoTranscriptUpdate(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(full_transcript_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
@@ -820,6 +826,7 @@ def process_single_video_transcript(channel_id, video_data):
 @ns.route('/<string:channel_id>/batch-transcript-update')
 class BatchTranscriptUpdate(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(batch_transcript_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id):
@@ -889,6 +896,7 @@ class BatchTranscriptUpdate(Resource):
 @ns.route('/video-list/<string:channel_id>/<string:video_id>')
 class YouTubeVideoDelete(Resource):
     @jwt_required()
+    @admin_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def delete(self, channel_id, video_id):
         """Delete a specific video from a channel and remove related user progress"""
@@ -931,6 +939,7 @@ class YouTubeVideoDelete(Resource):
 @ns.route('/video-list/<string:channel_id>/<string:video_id>')
 class YouTubeVideoUpdate(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(api.model('VideoUpdate', {
         'title': fields.String(required=False, description='Updated video title'),
         'visibility': fields.String(required=False, description='Updated video visibility'),
@@ -989,6 +998,7 @@ batch_restore_model = api.model('BatchRestore', {
 @ns.route('/<string:channel_id>/batch-restore-transcripts')
 class BatchRestoreTranscripts(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(batch_restore_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id):
@@ -1058,6 +1068,7 @@ class BatchRestoreTranscripts(Resource):
 @ns.route('/<string:channel_id>/<string:video_id>/restore-transcript')
 class RestoreVideoTranscript(Resource):
     @jwt_required()
+    @admin_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def post(self, channel_id, video_id):
         """Restore transcript for a specific video from original_transcript or SRT file"""
@@ -1094,6 +1105,7 @@ def start_initial_check_expired_plans():
 @ns.route('/<string:channel_id>/transcript-summary')
 class ChannelTranscriptSummary(Resource):
     @jwt_required()
+    @admin_required()
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def get(self, channel_id):
         """Get transcript summary for all videos in a channel"""
@@ -1379,6 +1391,7 @@ mark_video_refined_model = api.model('MarkVideoRefined', {
 @ns.route('/<string:channel_id>/batch-visibility-update')
 class BatchVideoVisibilityUpdate(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(batch_visibility_update_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id):
@@ -1465,6 +1478,7 @@ class BatchVideoVisibilityUpdate(Resource):
 @ns.route('/<string:channel_id>/transcript-filters')
 class TranscriptFilters(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(transcript_filters_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 500: 'Server Error'})
     def post(self, channel_id):
@@ -1520,6 +1534,7 @@ class TranscriptFilters(Resource):
 @ns.route('/<string:channel_id>/<string:video_id>/apply-filters')
 class SingleVideoApplyFilters(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(single_video_apply_filters_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def post(self, channel_id, video_id):
@@ -1561,6 +1576,7 @@ class SingleVideoApplyFilters(Resource):
 @ns.route('/<string:channel_id>/batch-apply-filters')
 class BatchApplyFilters(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(batch_apply_filters_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def post(self, channel_id):
@@ -1637,6 +1653,7 @@ class BatchApplyFilters(Resource):
 @ns.route('/<string:channel_id>/<string:video_id>/mark-refined')
 class MarkVideoRefined(Resource):
     @jwt_required()
+    @admin_required()
     @ns.expect(mark_video_refined_model)
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def post(self, channel_id, video_id):

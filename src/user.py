@@ -6,7 +6,7 @@ import logging
 from config import CHANNEL_PREFIX, USER_PREFIX, VIDEO_PREFIX
 from datetime import datetime, timezone, timedelta
 import time
-from utils import get_plan_name_by_duration, init_quota, update_user_plan, check_dictation_quota, register_dictation_video
+from utils import get_plan_name_by_duration, init_quota, update_user_plan, check_dictation_quota, register_dictation_video, require_admin_role, check_admin_role, admin_required
 import base64
 import uuid
 from redis_manager import RedisManager
@@ -171,7 +171,7 @@ class DictationProgress(Resource):
 
     @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID', 'videoId': 'Video ID'}, 
-                 responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+        responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's dictation progress for a specific video"""
         try:
@@ -222,7 +222,7 @@ class DictationProgress(Resource):
 class ChannelDictationProgress(Resource):
     @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID'}, 
-                 responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
+            responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get user's dictation progress for all videos in a specific channel"""
         try:
@@ -334,7 +334,7 @@ class AllUsers(Resource):
 class AllDictationProgress(Resource):
     @jwt_required()
     @user_ns.doc(params={'userEmail': 'Target user email (admin only, optional)'}, 
-                 responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
+        responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
     def get(self):
         """Get all dictation progress for the user with channel and video details"""
         try:
@@ -343,30 +343,14 @@ class AllDictationProgress(Resource):
             
             # If userEmail parameter is provided, check admin permission
             if target_user_email:
-                current_user_key = f"{USER_PREFIX}{current_user_email}"
-                current_user_data = redis_user_client.hgetall(current_user_key)
-                
-                if not current_user_data:
-                    logger.error(f"Current user data not found for: {current_user_email}")
-                    return {"error": "Admin access required"}, 403
-                
-                # Get role, handle both string and JSON formats
-                role = current_user_data.get('role', 'user')
-                try:
-                    # Try to parse as JSON if it's a JSON string
-                    role = json.loads(role)
-                except (json.JSONDecodeError, TypeError):
-                    # If not JSON, use as is
-                    pass
-                
-                logger.info(f"User {current_user_email} role: {role}")
-                
-                # Check for both 'Admin' and 'admin' for compatibility
-                if role.lower() != 'admin':
-                    return {"error": "Admin access required"}, 403
+                # Check admin role - only admins can view other users' progress
+                admin_check_result = require_admin_role(current_user_email)
+                if admin_check_result:
+                    return admin_check_result
                     
                 user_email = target_user_email
             else:
+                # No userEmail parameter, user is viewing their own progress
                 user_email = current_user_email
 
             user_key = f"{USER_PREFIX}{user_email}"
@@ -781,6 +765,7 @@ class MissedWords(Resource):
 @user_ns.route('/update-duration')
 class UpdateUserDuration(Resource):
     @jwt_required()
+    @admin_required()
     @user_ns.expect(user_ns.model('UpdateDuration', {
         'emails': fields.List(fields.String, required=True, description='List of user emails to update'),
         'duration': fields.Integer(required=True, description='Membership duration in days')
@@ -788,35 +773,13 @@ class UpdateUserDuration(Resource):
     def post(self):
         """Update user membership duration (Admin only)"""
         try:
-            # Get admin identity
-            admin_email = get_jwt_identity()
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                logger.error(f"Admin user not found: {admin_email}")
-                return {"error": "Admin user not found"}, 404
-                
-            # Ensure role information is correctly decoded
-            admin_role = None
-            if 'role' in admin_data:
-                admin_role = admin_data['role']
-            
-            logger.info(f"User {admin_email} with role {admin_role} attempting to update durations")
-            
-            # Use case-insensitive comparison here
-            if admin_role.lower() != 'admin':
-                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
-                return {"error": "Only admin users can update user durations"}, 403
             
             # Get request data
             data = request.json
             emails = data.get('emails', [])
             days_duration = data.get('duration')
             
-            logger.info(f"Admin {admin_email} updating duration for users: {emails} to {days_duration} days")
+            logger.info(f"Admin updating duration for users: {emails} to {days_duration} days")
             
             if not emails:
                 return {"error": "No emails provided"}, 400
@@ -872,7 +835,7 @@ class InitQuota(Resource):
 class DictationQuota(Resource):
     @jwt_required()
     @user_ns.doc(params={'channelId': 'Channel ID', 'videoId': 'Video ID'}, 
-                 responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
+        responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 500: 'Server Error'})
     def get(self):
         """Check user's dictation quota"""
         try:
@@ -1032,30 +995,11 @@ class ChannelRecommendations(Resource):
 @user_ns.route('/channel-recommendations/admin')
 class AdminChannelRecommendations(Resource):
     @jwt_required()
+    @admin_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
     def get(self):
         """Get all channel recommendations from all users (Admin only)"""
         try:
-            # Get admin identity
-            admin_email = get_jwt_identity()
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                logger.error(f"Admin user not found: {admin_email}")
-                return {"error": "Admin user not found"}, 404
-                
-            # Ensure role information is correctly decoded
-            admin_role = None
-            if 'role' in admin_data:
-                admin_role = admin_data['role']
-            
-            # Use case-insensitive comparison
-            if not admin_role or admin_role.lower() != 'admin':
-                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
-                return {"error": "Only admin users can access all channel recommendations"}, 403
             
             # Get all user keys
             user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
@@ -1082,7 +1026,7 @@ class AdminChannelRecommendations(Resource):
             # Sort by submission date (newest first)
             all_recommendations.sort(key=lambda x: x.get('submittedAt', ''), reverse=True)
             
-            logger.info(f"Admin {admin_email} retrieved all channel recommendations")
+            logger.info(f"Admin retrieved all channel recommendations")
             return all_recommendations, 200
             
         except Exception as e:
@@ -1093,6 +1037,7 @@ class AdminChannelRecommendations(Resource):
 @user_ns.route('/channel-recommendations/<string:recommendation_id>')
 class ManageChannelRecommendation(Resource):
     @jwt_required()
+    @admin_required(include_user_data=True)
     @user_ns.expect(user_ns.model('UpdateRecommendation', {
         'status': fields.String(required=True, description='Recommendation status (pending, approved, rejected)'),
         'name': fields.String(required=False, description='Channel name'),
@@ -1104,29 +1049,11 @@ class ManageChannelRecommendation(Resource):
         'reason': fields.String(required=False, description='Rejected reason')
     }))
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
-    def put(self, recommendation_id):
+    def put(self, recommendation_id, admin_data):
         """Update a channel recommendation (Admin only)"""
         try:
-            # Get admin identity
-            admin_email = get_jwt_identity()
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                logger.error(f"Admin user not found: {admin_email}")
-                return {"error": "Admin user not found"}, 404
-                
-            # Ensure role information is correctly decoded
-            admin_role = None
-            if 'role' in admin_data:
-                admin_role = admin_data['role']
-            
-            # Use case-insensitive comparison
-            if not admin_role or admin_role.lower() != 'admin':
-                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
-                return {"error": "Only admin users can update channel recommendations"}, 403
+            # Get admin email from admin_data
+            admin_email = admin_data.get('email', 'Unknown Admin')
             
             # Get update data
             update_data = request.json
@@ -1320,30 +1247,11 @@ class UserFeedback(Resource):
 @user_ns.route('/feedback/admin/list')
 class AdminFeedback(Resource):
     @jwt_required()
+    @admin_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
     def get(self):
         """Get all feedback messages from all users (Admin only)"""
         try:
-            # Get admin identity
-            admin_email = get_jwt_identity()
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                logger.error(f"Admin user not found: {admin_email}")
-                return {"error": "Admin user not found"}, 404
-                
-            # Ensure role information is correctly decoded
-            admin_role = None
-            if 'role' in admin_data:
-                admin_role = admin_data['role']
-            
-            # Use case-insensitive comparison
-            if not admin_role or admin_role.lower() != 'admin':
-                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
-                return {"error": "Only admin users can access all feedback messages"}, 403
             
             # Get all user keys
             user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
@@ -1368,7 +1276,7 @@ class AdminFeedback(Resource):
                     logger.error(f"Error processing feedback for user {user_key}: {str(e)}")
                     continue
             
-            logger.info(f"Admin {admin_email} retrieved all feedback messages")
+            logger.info(f"Admin retrieved all feedback messages")
             return feedback_user_list, 200
             
         except Exception as e:
@@ -1378,25 +1286,12 @@ class AdminFeedback(Resource):
 @user_ns.route('/feedback/admin')
 class AdminSendFeedback(Resource):
     @jwt_required()
+    @admin_required(include_user_data=True)
     @user_ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error'})
-    def post(self):
+    def post(self, admin_data):
         """Admin sends a feedback message to a user (as a new message in feedback_messages)"""
         try:
-            admin_email = get_jwt_identity()
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            if not admin_data:
-                logger.error(f"Admin user not found: {admin_email}")
-                return {"error": "Admin user not found"}, 404
-            admin_role = None
-            if 'role' in admin_data:
-                admin_role = admin_data['role']
-            admin_name = None
-            if 'username' in admin_data:
-                admin_name = admin_data['username']
-            if not admin_role or admin_role.lower() != 'admin':
-                logger.error(f"User {admin_email} with role {admin_role} attempted admin action")
-                return {"error": "Only admin users can send feedback messages"}, 403
+            admin_name = admin_data.get('username', 'Admin')
 
             # Accept both JSON and multipart/form-data
             if request.content_type and request.content_type.startswith('multipart/form-data'):
@@ -1455,7 +1350,7 @@ class AdminSendFeedback(Resource):
             # Save updated feedback messages
             redis_user_client.hset(user_key, 'feedback_messages', json.dumps(feedback_messages))
 
-            logger.info(f"Admin {admin_email} sent feedback message to user: {user_email}")
+            logger.info(f"Admin {admin_data.get('email', 'Unknown')} sent feedback message to user: {user_email}")
             return {"message": "Feedback message sent successfully", "feedback": new_feedback}, 200
 
         except Exception as e:
@@ -1581,22 +1476,11 @@ class VideoErrorReport(Resource):
 @user_ns.route('/video-error-reports/admin')
 class AdminVideoErrorReports(Resource):
     @jwt_required()
+    @admin_required()
     @user_ns.doc(responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
     def get(self):
         """Get all video error reports (Admin only)"""
         try:
-            admin_email = get_jwt_identity()
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                return {"error": "Admin user not found"}, 404
-            
-            admin_role = admin_data.get('role', '').lower()
-            if admin_role != 'admin':
-                return {"error": "Only admin users can access all video error reports"}, 403
             
             # Get all user keys and collect their video error reports
             user_keys = redis_user_client.keys(f"{USER_PREFIX}*")
@@ -1619,7 +1503,7 @@ class AdminVideoErrorReports(Resource):
             # Sort by timestamp (newest first)
             all_reports.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
             
-            logger.info(f"Admin {admin_email} retrieved {len(all_reports)} video error reports")
+            logger.info(f"Admin retrieved {len(all_reports)} video error reports")
             return all_reports, 200
             
         except Exception as e:
@@ -1629,24 +1513,12 @@ class AdminVideoErrorReports(Resource):
 @user_ns.route('/usage-stats')
 class UserUsageStats(Resource):
     @jwt_required()
+    @admin_required()
     @user_ns.doc(params={'days': 'Number of days to get statistics for (1, 7, 30, 60 or any positive integer)'}, 
-                 responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
+        responses={200: 'Success', 401: 'Unauthorized', 403: 'Forbidden', 500: 'Server Error'})
     def get(self):
         """Get user usage statistics for the specified number of days (Admin only)"""
         try:
-            # Get admin identity
-            admin_email = get_jwt_identity()
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                return {"error": "Admin user not found"}, 404
-            
-            admin_role = admin_data.get('role', '').lower()
-            if admin_role != 'admin':
-                return {"error": "Only admin users can access usage statistics"}, 403
             
             # Get days parameter
             days = request.args.get('days', 1, type=int)
@@ -1782,7 +1654,7 @@ class UserUsageStats(Resource):
                 'dailyNewUsers': daily_registrations
             }
             
-            logger.info(f"Admin {admin_email} retrieved usage statistics for {days} days")
+            logger.info(f"Admin retrieved usage statistics for {days} days")
             return result, 200
             
         except Exception as e:
@@ -1792,6 +1664,7 @@ class UserUsageStats(Resource):
 @user_ns.route('/video-error-reports/<string:report_id>')
 class VideoErrorReportUpdate(Resource):
     @jwt_required()
+    @admin_required()
     @user_ns.expect(user_ns.model('VideoErrorReportUpdate', {
         'status': fields.String(required=True, description='New status (pending, resolved, rejected)'),
         'adminResponse': fields.String(required=False, description='Admin response message')
@@ -1800,19 +1673,7 @@ class VideoErrorReportUpdate(Resource):
     def put(self, report_id):
         """Update video error report status (Admin only)"""
         try:
-            admin_email = get_jwt_identity()
             data = request.json
-            
-            # Check if user is admin
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data:
-                return {"error": "Admin user not found"}, 404
-            
-            admin_role = admin_data.get('role', '').lower()
-            if admin_role != 'admin':
-                return {"error": "Only admin users can update video error reports"}, 403
             
             # Validate status
             valid_statuses = ['pending', 'resolved', 'rejected']
@@ -1862,7 +1723,7 @@ class VideoErrorReportUpdate(Resource):
             if not report_found:
                 return {"error": "Video error report not found"}, 404
             
-            logger.info(f"Admin {admin_email} updated video error report {report_id} to status: {new_status}")
+            logger.info(f"Admin updated video error report {report_id} to status: {new_status}")
             return {"message": f"Video error report updated successfully to {new_status}"}, 200
             
         except Exception as e:

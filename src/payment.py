@@ -16,7 +16,7 @@ from config import (
     USER_PREFIX,
     VERIFICATION_CODE_EXPIRE_SECONDS
 )
-from utils import with_retry, get_plan_name_by_duration, update_user_plan
+from utils import with_retry, get_plan_name_by_duration, update_user_plan, admin_required
 from celery import shared_task
 from datetime import datetime, timedelta
 import json
@@ -60,7 +60,7 @@ payment_model = payment_ns.model('Payment', {
 
 verification_code_model = payment_ns.model('VerificationCode', {
     'duration': fields.String(required=True, description='Membership duration (30days, 60days, 90days, permanent)', 
-                             enum=['30days', '60days', '90days', 'permanent'])
+        enum=['30days', '60days', '90days', 'permanent'])
 })
 
 verification_model = payment_ns.model('Verification', {
@@ -417,6 +417,7 @@ def retry_failed_updates(self, session_id):
 @payment_ns.route('/generate-code')
 class GenerateVerificationCode(Resource):
     @jwt_required()
+    @admin_required()
     @payment_ns.expect(verification_code_model)
     @payment_ns.doc(
         responses={
@@ -431,7 +432,6 @@ class GenerateVerificationCode(Resource):
         """Generate a verification code for membership duration"""
         try:
             # 获取管理员身份
-            admin_email = get_jwt_identity()
             data = request.json
             duration = data.get('duration')
 
@@ -541,6 +541,7 @@ class VerifyCode(Resource):
 @payment_ns.route('/verification-codes')
 class VerificationCodes(Resource):
     @jwt_required()
+    @admin_required()
     @payment_ns.doc(
         responses={
             200: 'Success - Returns all active verification codes',
@@ -553,16 +554,6 @@ class VerificationCodes(Resource):
     def get(self):
         """Get all active verification codes (Admin only)"""
         try:
-            # 获取用户身份
-            user_email = get_jwt_identity()
-            
-            # 检查用户是否为管理员
-            user_key = f"{USER_PREFIX}{user_email}"
-            user_data = redis_user_client.hgetall(user_key)
-            
-            if not user_data or user_data.get('role', '') != 'Admin':
-                logger.warning(f"Non-admin user {user_email} attempted to access verification codes")
-                return {"error": "Only administrators can access verification codes"}, 403
             
             # 获取所有校验码
             codes = []
@@ -607,6 +598,7 @@ class VerificationCodes(Resource):
 @payment_ns.route('/assign-code')
 class AssignVerificationCode(Resource):
     @jwt_required()
+    @admin_required()
     @payment_ns.expect(payment_ns.model('AssignCode', {
         'code': fields.String(required=True, description='Verification code to assign'),
         'userEmail': fields.String(required=True, description='Email of the user to assign the code to')
@@ -625,16 +617,6 @@ class AssignVerificationCode(Resource):
     def post(self):
         """Assign a verification code to a specific user (Admin only)"""
         try:
-            # 获取管理员身份
-            admin_email = get_jwt_identity()
-            
-            # 检查用户是否为管理员
-            admin_key = f"{USER_PREFIX}{admin_email}"
-            admin_data = redis_user_client.hgetall(admin_key)
-            
-            if not admin_data or admin_data.get('role', '') != 'Admin':
-                logger.warning(f"Non-admin user {admin_email} attempted to assign verification code")
-                return {"error": "Only administrators can assign verification codes"}, 403
             
             # 获取请求数据
             data = request.json
@@ -747,7 +729,7 @@ class AssignVerificationCode(Resource):
             # 使用后删除验证码
             redis_user_client.delete(code_key)
             
-            logger.info(f"Admin {admin_email} assigned membership to user {user_email}. Plan details: {plan_data}")
+            logger.info(f"Admin assigned membership to user {user_email}. Plan details: {plan_data}")
             return {
                 "message": f"Membership successfully assigned to {user_email}",
                 "plan": plan_data

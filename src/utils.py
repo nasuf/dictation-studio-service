@@ -8,6 +8,7 @@ from functools import wraps
 from datetime import datetime, timedelta, timezone
 from redis_manager import RedisManager
 from config import JWT_ACCESS_TOKEN_EXPIRES, PAYMENT_MAX_RETRY_ATTEMPTS, PAYMENT_RETRY_DELAY_SECONDS, USER_PREFIX
+from flask_jwt_extended import get_jwt_identity
 from youtube_transcript_api import YouTubeTranscriptApi
 from bs4 import BeautifulSoup
 import time
@@ -578,3 +579,105 @@ def register_dictation_video(user_id, channel_id, video_id):
     redis_user_client.hset(user_key, "quota", json.dumps(quota_info))
     
     return True
+
+def check_admin_role(user_email, redis_client=None):
+    """
+    Check if a user has admin role
+    
+    Args:
+        user_email (str): User's email to check
+        redis_client: Redis client instance (optional, will use default if not provided)
+        
+    Returns:
+        tuple: (is_admin: bool, user_data: dict, error_response: tuple or None)
+        - is_admin: True if user is admin, False otherwise
+        - user_data: User data dictionary from Redis
+        - error_response: Tuple of (error_dict, status_code) if error, None if success
+    """
+    if redis_client is None:
+        redis_client = redis_user_client
+    
+    try:
+        user_key = f"{USER_PREFIX}{user_email}"
+        user_data = redis_client.hgetall(user_key)
+        
+        if not user_data:
+            logger.error(f"User data not found for: {user_email}")
+            return False, {}, ({"error": "User not found"}, 404)
+        
+        # Get role, handle both string and JSON formats for compatibility
+        role = user_data.get('role', 'user')
+        try:
+            # Try to parse as JSON if it's a JSON string
+            role = json.loads(role)
+        except (json.JSONDecodeError, TypeError):
+            # If not JSON, use as is
+            pass
+        
+        # Use case-insensitive comparison for consistency
+        is_admin = str(role).lower() == 'admin'
+        
+        if not is_admin:
+            logger.warning(f"Non-admin user {user_email} attempted admin action")
+            return False, user_data, ({"error": "Admin access required"}, 403)
+        
+        return True, user_data, None
+        
+    except Exception as e:
+        logger.error(f"Error checking admin role for user {user_email}: {str(e)}")
+        return False, {}, ({"error": "An error occurred while checking admin permissions"}, 500)
+
+def require_admin_role(user_email, redis_client=None):
+    """
+    Decorator-style function that checks admin role and returns error response if not admin
+    
+    Args:
+        user_email (str): User's email to check
+        redis_client: Redis client instance (optional)
+        
+    Returns:
+        tuple or None: (error_dict, status_code) if not admin, None if admin
+    """
+    is_admin, user_data, error_response = check_admin_role(user_email, redis_client)
+    return error_response
+
+def admin_required(include_user_data=False):
+    """
+    Decorator for admin-only endpoints
+    
+    Args:
+        include_user_data (bool): If True, admin user data will be passed to the decorated function
+        
+    Usage:
+        @admin_required()
+        def admin_only_endpoint(self):
+            # Only admin can access this
+            
+        @admin_required(include_user_data=True)  
+        def admin_endpoint_with_data(self, admin_data):
+            # Admin user data is passed as additional parameter
+            admin_name = admin_data.get('username', 'Admin')
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Get current user from JWT
+            try:
+                current_user_email = get_jwt_identity()
+            except Exception as e:
+                logger.error(f"Error getting JWT identity: {str(e)}")
+                return {"error": "Authentication required"}, 401
+            
+            # Check admin role
+            is_admin, admin_data, error_response = check_admin_role(current_user_email)
+            if not is_admin:
+                return error_response
+            
+            # If admin user data is requested, pass it as additional parameter
+            if include_user_data:
+                return func(*args, admin_data, **kwargs)
+            else:
+                return func(*args, **kwargs)
+                
+        return wrapper
+    return decorator
