@@ -716,6 +716,8 @@ class YouTubeVideoListByChannel(Resource):
                     video_data['updated_at'] = int(video_data['updated_at'])
                 if 'is_refined' in video_data:
                     video_data['is_refined'] = video_data.get('is_refined', 'false').lower() == 'true'
+                else:
+                    video_data['is_refined'] = False
                 if 'refined_at' in video_data:
                     video_data['refined_at'] = int(video_data['refined_at'])
                 videos.append(video_data)
