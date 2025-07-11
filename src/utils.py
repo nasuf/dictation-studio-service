@@ -135,7 +135,9 @@ def parse_srt_file(file_path):
             end_seconds = convert_time_to_seconds(end_time)
             
             # Join all lines after the time line as the transcript text
-            transcript_text = ' '.join(lines[2:]).replace('\n', ' ').strip()
+            transcript_text = ' '.join(lines[2:]).replace('\n', ' ')
+            # Remove multiple spaces and leading and trailing spaces
+            transcript_text = re.sub(r'\s+', ' ', transcript_text).strip()
             
             formatted_transcript.append({
                 "start": start_seconds,
