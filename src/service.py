@@ -1722,6 +1722,36 @@ class MarkVideoRefined(Resource):
             logger.error(f"Error getting refined status for video {video_id}: {str(e)}")
             return {"error": f"Error getting refined status: {str(e)}"}, 500
 
+@ns.route('/admin/stats')
+class AdminStats(Resource):
+    @jwt_required()
+    @admin_required()
+    @ns.doc(responses={200: 'Success', 401: 'Unauthorized Access', 500: 'Server Error'})
+    def get(self):
+        """Get admin statistics: total channels and total videos across all channels"""
+        try:
+            # Count total channels
+            channel_count = 0
+            for _ in redis_resource_client.scan_iter(f"{CHANNEL_PREFIX}*"):
+                channel_count += 1
+            
+            # Count total videos across all channels
+            video_count = 0
+            for _ in redis_resource_client.scan_iter(f"{VIDEO_PREFIX}*"):
+                video_count += 1
+            
+            logger.info(f"Admin stats retrieved: {channel_count} channels, {video_count} videos")
+            
+            return {
+                "total_channels": channel_count,
+                "total_videos": video_count,
+                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving admin statistics: {str(e)}")
+            return {"error": f"Error retrieving admin statistics: {str(e)}"}, 500
+
 # Add user namespace to API
 if __name__ == '__main__':
     # Only start the timer in the main process, not in the reloader process
