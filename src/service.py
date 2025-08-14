@@ -1752,6 +1752,98 @@ class AdminStats(Resource):
             logger.error(f"Error retrieving admin statistics: {str(e)}")
             return {"error": f"Error retrieving admin statistics: {str(e)}"}, 500
 
+@ns.route('/admin/analytics/videos')
+class AdminAnalytics(Resource):
+    @jwt_required()
+    @admin_required()
+    @ns.doc(responses={200: 'Success', 401: 'Unauthorized Access', 500: 'Server Error'})
+    def get(self):
+        """Get detailed analytics: video counts by visibility, refined status, and per channel breakdown"""
+        try:
+            # Initialize counters
+            total_videos = 0
+            public_videos = 0
+            private_videos = 0
+            refined_videos = 0
+            channel_stats = {}
+            
+            # Iterate through all videos
+            for video_key in redis_resource_client.scan_iter(f"{VIDEO_PREFIX}*"):
+                total_videos += 1
+                
+                # Get video data
+                video_data = redis_resource_client.hgetall(video_key)
+                if not video_data:
+                    continue
+                
+                # Extract channel_id from key format: "video:channel_id:video_id"
+                key_parts = video_key.split(':')
+                if len(key_parts) >= 3:
+                    channel_id = key_parts[1]
+                else:
+                    continue
+                
+                # Initialize channel stats if not exists
+                if channel_id not in channel_stats:
+                    channel_stats[channel_id] = {
+                        'channel_id': channel_id,
+                        'total_videos': 0,
+                        'public_videos': 0,
+                        'private_videos': 0,
+                        'refined_videos': 0
+                    }
+                
+                # Update channel totals
+                channel_stats[channel_id]['total_videos'] += 1
+                
+                # Count by visibility (treat hidden as private)
+                visibility = video_data.get('visibility', 'private').lower()
+                if visibility == 'public':
+                    public_videos += 1
+                    channel_stats[channel_id]['public_videos'] += 1
+                else:  # private, hidden, or any other value - treat as private
+                    private_videos += 1
+                    channel_stats[channel_id]['private_videos'] += 1
+                
+                # Count refined videos
+                is_refined = video_data.get('is_refined', 'false').lower() == 'true'
+                if is_refined:
+                    refined_videos += 1
+                    channel_stats[channel_id]['refined_videos'] += 1
+            
+            # Get channel names for the stats
+            channel_analytics = []
+            for channel_id, stats in channel_stats.items():
+                channel_key = f"{CHANNEL_PREFIX}{channel_id}"
+                channel_data = redis_resource_client.hgetall(channel_key)
+                channel_name = channel_data.get('name', f'Unknown Channel ({channel_id})') if channel_data else f'Unknown Channel ({channel_id})'
+                
+                channel_analytics.append({
+                    **stats,
+                    'channel_name': channel_name
+                })
+            
+            # Sort channels by total videos descending
+            channel_analytics.sort(key=lambda x: x['total_videos'], reverse=True)
+            
+            logger.info(f"Analytics retrieved: {total_videos} total videos, {len(channel_analytics)} channels")
+            
+            return {
+                "summary": {
+                    "total_videos": total_videos,
+                    "public_videos": public_videos,
+                    "private_videos": private_videos,
+                    "refined_videos": refined_videos,
+                    "unrefined_videos": total_videos - refined_videos
+                },
+                "channels": channel_analytics,
+                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error retrieving analytics data: {str(e)}")
+            return {"error": f"Error retrieving analytics data: {str(e)}"}, 500
+
 # Add user namespace to API
 if __name__ == '__main__':
     # Only start the timer in the main process, not in the reloader process
