@@ -945,10 +945,11 @@ class YouTubeVideoUpdate(Resource):
     @ns.expect(api.model('VideoUpdate', {
         'title': fields.String(required=False, description='Updated video title'),
         'visibility': fields.String(required=False, description='Updated video visibility'),
+        'link': fields.String(required=False, description='Updated video link'),
     }))
     @ns.doc(responses={200: 'Success', 400: 'Invalid Input', 401: 'Unauthorized Access', 404: 'Not Found', 500: 'Server Error'})
     def put(self, channel_id, video_id):
-        """Update a specific video's attributes in a channel (only title and visibility, keep all other fields unchanged)"""
+        """Update a specific video's attributes in a channel (title, visibility, and link, keep all other fields unchanged)"""
         old_video_key = f"{VIDEO_PREFIX}{channel_id}:{video_id}"
         video_info = redis_resource_client.hgetall(old_video_key)
         if not video_info:
@@ -960,11 +961,13 @@ class YouTubeVideoUpdate(Resource):
             logger.warning("No update data provided")
             return {"error": "No update data provided"}, 400
 
-        # Only update title and visibility if provided
+        # Update title, visibility, and link if provided
         if 'title' in data and data['title'] is not None:
             video_info['title'] = data['title']
         if 'visibility' in data and data['visibility'] is not None:
             video_info['visibility'] = data['visibility']
+        if 'link' in data and data['link'] is not None:
+            video_info['link'] = data['link']
         video_info['updated_at'] = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         # Save to Redis, do not touch any other fields (e.g., transcript, original_transcript)
