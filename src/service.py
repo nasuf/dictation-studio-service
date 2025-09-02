@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import logging
+import random
 from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
@@ -1846,6 +1847,82 @@ class AdminAnalytics(Resource):
         except Exception as e:
             logger.error(f"Error retrieving analytics data: {str(e)}")
             return {"error": f"Error retrieving analytics data: {str(e)}"}, 500
+
+@ns.route('/random-video')
+class RandomVideo(Resource):
+    @jwt_required()
+    @ns.doc(responses={200: 'Success', 404: 'No videos found', 500: 'Server Error'})
+    def get(self):
+        """Get a random video from all public channels using efficient two-step random selection"""
+        try:
+            # Step 1: Get all public channels
+            public_channels = []
+            channel_pattern = f"{CHANNEL_PREFIX}*"
+            
+            for channel_key in redis_resource_client.scan_iter(channel_pattern):
+                channel_data = redis_resource_client.hgetall(channel_key)
+                
+                if channel_data and channel_data.get('visibility', '').lower() == 'public':
+                    channel_id = channel_key.replace(CHANNEL_PREFIX, '')
+                    
+                    # Count public videos in this channel
+                    video_pattern = f"{VIDEO_PREFIX}{channel_id}:*"
+                    public_video_count = 0
+                    channel_videos = []
+                    
+                    for video_key in redis_resource_client.scan_iter(video_pattern):
+                        video_data = redis_resource_client.hgetall(video_key)
+                        if video_data and video_data.get('visibility', '').lower() == 'public':
+                            public_video_count += 1
+                            # Store video info for later use
+                            video_id = video_key.split(':')[-1]  # Get video_id from key
+                            channel_videos.append({
+                                'video_id': video_id,
+                                'video_data': video_data
+                            })
+                    
+                    if public_video_count > 0:
+                        public_channels.append({
+                            'channel_id': channel_id,
+                            'channel_data': channel_data,
+                            'video_count': public_video_count,
+                            'videos': channel_videos
+                        })
+            
+            if not public_channels:
+                logger.warning("No public channels with videos found for random selection")
+                return {"error": "No public videos available for random selection"}, 404
+            
+            # Step 2: Randomly select a channel weighted by video count
+            total_videos = sum(ch['video_count'] for ch in public_channels)
+            
+            # Create weighted selection based on number of videos in each channel
+            weights = [ch['video_count'] for ch in public_channels]
+            selected_channel = random.choices(public_channels, weights=weights, k=1)[0]
+            
+            # Step 3: Randomly select a video from the chosen channel
+            selected_video_info = random.choice(selected_channel['videos'])
+            
+            # Build response
+            random_video = {
+                'channel_id': selected_channel['channel_id'],
+                'video_id': selected_video_info['video_id'],
+                'video_title': selected_video_info['video_data'].get('title', 'Unknown Title'),
+                'video_link': selected_video_info['video_data'].get('link', ''),
+                'channel_name': selected_channel['channel_data'].get('name', 'Unknown Channel'),
+                'channel_image_url': selected_channel['channel_data'].get('image_url', ''),
+                'language': selected_channel['channel_data'].get('language', 'en')
+            }
+            
+            logger.info(f"Selected random video: {random_video['video_id']} from channel {random_video['channel_id']} (total available: {total_videos})")
+            return {
+                "video": random_video,
+                "total_available_videos": total_videos
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error selecting random video: {str(e)}")
+            return {"error": f"Error selecting random video: {str(e)}"}, 500
 
 # Add user namespace to API
 if __name__ == '__main__':
