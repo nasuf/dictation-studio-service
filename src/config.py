@@ -23,8 +23,9 @@ JWT_REFRESH_TOKEN_EXPIRES = False
 
 # default expiry time is 30 days (UTC milliseconds)
 USER_PLAN_DEFAULT = json.dumps({
-    "name": "Premium", 
-    "expireTime": int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp() * 1000), 
+    "name": "Free", 
+    # "expireTime": int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp() * 1000), 
+    "expireTime": None,
     "isRecurring": False, 
     "status": "active"
 })
